@@ -40,6 +40,9 @@
   stops, and keys from different processes interleave. The counter document
   keeps its format (`seq` is now the last *reserved* key).
   `MongoBackend::with_key_block_size(1)` restores one `$inc` per insert.
+- **Benchmarks:** the FastAPI MongoDB baseline reserves todo keys in
+  blocks of 64 like Siderite (`benchmarks/fastapi/mongo_keys.py`) instead
+  of one `$inc` per insert, so the insert comparison uses one key strategy.
 
 ## [0.1.0] - 2026-11-13
 

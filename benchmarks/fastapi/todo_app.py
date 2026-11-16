@@ -8,6 +8,7 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from sqlite_connections import SQLiteConnections
 from database_settings import capture
+from mongo_keys import COUNTERS, KeyBlockAllocator
 
 # Global database connection / pool reference
 db_backend: str = os.getenv("DB_BACKEND", "sqlite").lower()
@@ -15,6 +16,8 @@ pg_pool = None
 mysql_pool = None
 mongo_db = None
 mongo_client = None
+# Per-process todo key blocks (created in lifespan, like Siderite's).
+mongo_keys = None
 sqlite_path: str = os.getenv("SQLITE_PATH", "todo_bench.db")
 pool_size: int = int(os.getenv("DATABASE_POOL_SIZE", "10"))
 # Matches the Siderite app: WAL (set on the file by the runner) with
@@ -81,7 +84,7 @@ class TodoOut(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global pg_pool, mysql_pool, mongo_db, mongo_client
+    global pg_pool, mysql_pool, mongo_db, mongo_client, mongo_keys
     if os.getenv("BENCHMARK_RUNTIME"):
         import json
         print("BENCHMARK_RUNTIME " + json.dumps({
@@ -166,6 +169,7 @@ async def lifespan(app: FastAPI):
         )
         mongo_client = AsyncIOMotorClient(mongo_url, maxPoolSize=pool_size)
         mongo_db = mongo_client.get_default_database("siderite")
+        mongo_keys = KeyBlockAllocator(mongo_db[COUNTERS], "todos")
     elif db_backend == "sqlite":
         if sqlite_mode == "pooled":
             # Starlette's default worker limit must not cap the pool.
@@ -312,14 +316,8 @@ async def create_todo(todo: TodoCreate):
                 inserted_id = cur.lastrowid
                 return TodoOut(id=inserted_id, title=todo.title, done=False)
     elif db_backend == "mongodb":
-        # Atomically increment integer counter
-        counter = await mongo_db["siderite_counters"].find_one_and_update(
-            {"_id": "todos"},
-            {"$inc": {"seq": 1}},
-            upsert=True,
-            return_document=True,
-        )
-        new_id = counter["seq"]
+        # Keys come from 64-key blocks, like Siderite's MongoDB backend.
+        new_id = await mongo_keys.next_key()
         await mongo_db["todos"].insert_one(
             {"_id": new_id, "title": todo.title, "done": False}
         )

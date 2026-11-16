@@ -217,6 +217,12 @@ clients follow the owned URL database while retaining its original
 `authSource`. Failed cleanup reports the generated name for reconciliation.
 Direct `run_todo_suite` calls must supply their own disposable database/file.
 
+MongoDB inserts use the same key strategy in both apps: the FastAPI baseline
+(`fastapi/mongo_keys.py`) reserves 64 keys per `$inc` on `siderite_counters`
+and hands them out from memory, like Siderite's MongoDB backend, instead of
+one `$inc` per insert. Each process reserves its own blocks, so keys stay
+unique and above the seeded count but are not contiguous across processes.
+
 Runtime/load controls: `--concurrency`, `--requests`, `--warmup-requests`
 and `--runtime-workers`. Rust defaults to one scheduler worker; FastAPI
 runs one Uvicorn process/event loop. Larger Rust worker counts are retained
