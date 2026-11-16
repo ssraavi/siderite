@@ -24,12 +24,22 @@
 //! keys and update targets are translated, and `_id` is renamed back on
 //! read. A key the plan does not supply (an insert that omits it) is
 //! generated as an `i64` from a counter document in `siderite_counters`
-//! (`$inc` by the batch size, so a bulk insert gets consecutive keys in
-//! input order; the counter lives outside the transaction like a sequence,
-//! so a rollback leaves a gap). Explicitly supplied keys do not advance the
-//! counter. A collection whose key column is not registered still works, but
-//! its key column is then an ordinary field next to a generated `_id`, and
-//! duplicates of it are not rejected.
+//! (`{_id: <collection>, seq: <last reserved key>}`), like a SQL sequence
+//! with `CACHE 64`: the backend reserves a block of keys with one `$inc` and
+//! hands them out from memory, shared by its clones and transactions
+//! ([`MongoBackend::with_key_block_size`] changes the size; `1` makes one
+//! `$inc` per insert). A bulk insert gets consecutive keys in input order;
+//! if the current block cannot hold all of them, a new block of at least the
+//! batch size is reserved and the rest of the old one is skipped. The
+//! counter lives outside the transaction, so a rollback leaves a gap, as do
+//! the unused keys of a block when the process stops. Each backend (built
+//! by `connect` / `from_client`, and so each process) reserves
+//! its own blocks, so keys are unique but those of different processes
+//! interleave and do not follow insertion order. Explicitly supplied keys do
+//! not advance the counter (a generated key that collides with one fails
+//! the insert with a constraint error). A collection whose key column is
+//! not registered still works, but its key column is then an ordinary field
+//! next to a generated `_id`, and duplicates of it are not rejected.
 //!
 //! # Mapping table
 //!
@@ -149,6 +159,7 @@ pub mod compile;
 #[cfg(test)]
 mod compile_tests;
 mod exec;
+mod keys;
 pub mod value;
 
 pub use compile::Keys;

@@ -20,8 +20,9 @@ test; without the variable the tests print a notice and pass.
 
 Single-collection CRUD, `filter`/`exclude`, ordering, `limit`/`offset`,
 `count`, `save` (update by key). The `id` column is stored as `_id`; when it is
-omitted the backend generates increasing `i64` keys from a counter collection
-(`siderite_counters`).
+omitted the backend generates `i64` keys from a counter collection
+(`siderite_counters`), reserving 64 at a time (keys from one process increase;
+a restart skips the unused rest of a block).
 
 ## Limitations (kept out of this example)
 

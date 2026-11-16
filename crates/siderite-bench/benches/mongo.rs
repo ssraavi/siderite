@@ -16,12 +16,14 @@
 //!   is `find_one({_id: 1})`; `opmsg_find` is a `find` with `limit: 1` and
 //!   `singleBatch` on one raw connection; `compile` builds the queryset and
 //!   compiles it, without I/O.
-//! * `mongo_insert`: `orm` is `create`; `driver_counter_insert` reserves the
-//!   key from the counter (`findAndModify`) and then inserts, as the ORM
-//!   does; `driver_insert_client_key` and `opmsg_insert` insert with a key
-//!   chosen by the client. Ids starting `w_default/` leave the write
-//!   concern to the server (majority, journaled, on a default replica set);
-//!   `w1/` ids set `w=1` on the URL, or in the raw command.
+//! * `mongo_insert`: `orm` is `create` (keys come from blocks of 64 reserved
+//!   with one counter update, so most inserts are one round trip);
+//!   `driver_counter_insert` reserves each key from the counter
+//!   (`findAndModify`) and then inserts, as the ORM did with one key per
+//!   counter update; `driver_insert_client_key` and `opmsg_insert` insert
+//!   with a key chosen by the client. Ids starting `w_default/` leave the
+//!   write concern to the server (majority, journaled, on a default replica
+//!   set); `w1/` ids set `w=1` on the URL, or in the raw command.
 //!
 //! All variants run one request at a time on a current-thread Tokio
 //! runtime, so each time is the latency of one request.
@@ -283,8 +285,8 @@ async fn orm_create(db: &Db) -> Res<Todo> {
     Ok(Todo::objects(db).create(todo).await?)
 }
 
-/// Variant `driver_counter_insert`: reserve one key as the ORM does, then
-/// insert.
+/// Variant `driver_counter_insert`: reserve one key from the counter (the
+/// ORM's former per-insert path, kept as the reference), then insert.
 async fn driver_counter_insert(target: &Target) -> Res<i64> {
     let counter = target
         .counters

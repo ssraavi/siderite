@@ -256,14 +256,14 @@
       "path": "website/src/content/docs/guides/data/backends.md",
       "line": 182,
       "features": [],
-      "text": "- Requires MongoDB 5.0+. Transactions need a replica set (a single-node one\n  is enough). No savepoints, so `bulk_create` inside a transaction is a\n  capability error.\n- A table is a collection. The primary key column (default `id`) is stored\n  as `_id`. Missing keys are generated as consecutive `i64` values from\n  `siderite_counters`, **outside** the transaction, so rollbacks leave gaps.\n- Reads compile to aggregation pipelines. Plans are checked and compiled\n  entirely before any I/O.\n- Predicates follow SQL three-valued logic: `= NULL` means `IS NULL`.\n- `update()` / `delete()` on a queryset with a limit, `distinct`, or joins\n  becomes `pk IN (subquery)` and is therefore a `Subqueries` capability\n  error.\n- No foreign keys or cascades. Only `_id` is unique, plus indexes made with\n  `MongoBackend::create_unique_index`.\n- Joins, subqueries, set operations, window functions, row locking,\n  `DISTINCT ON`, and array aggregates are capability errors (HTTP 501)."
+      "text": "- Requires MongoDB 5.0+. Transactions need a replica set (a single-node one\n  is enough). No savepoints, so `bulk_create` inside a transaction is a\n  capability error.\n- A table is a collection. The primary key column (default `id`) is stored\n  as `_id`. Missing keys are generated as `i64` values from\n  `siderite_counters`, **outside** the transaction, in blocks of 64 keys\n  per counter round trip (`MongoBackend::with_key_block_size`). A bulk\n  insert gets consecutive keys; rollbacks and restarts leave gaps, and keys\n  from different processes interleave rather than follow insertion order.\n- Reads compile to aggregation pipelines. Plans are checked and compiled\n  entirely before any I/O.\n- Predicates follow SQL three-valued logic: `= NULL` means `IS NULL`.\n- `update()` / `delete()` on a queryset with a limit, `distinct`, or joins\n  becomes `pk IN (subquery)` and is therefore a `Subqueries` capability\n  error.\n- No foreign keys or cascades. Only `_id` is unique, plus indexes made with\n  `MongoBackend::create_unique_index`.\n- Joins, subqueries, set operations, window functions, row locking,\n  `DISTINCT ON`, and array aggregates are capability errors (HTTP 501)."
     },
     {
       "id": "guides/data/backends#redis",
       "kind": "guide",
       "title": "Backends > Redis",
       "path": "website/src/content/docs/guides/data/backends.md",
-      "line": 201,
+      "line": 204,
       "features": [
         "redis"
       ],
@@ -274,7 +274,7 @@
       "kind": "guide",
       "title": "Backends > Raw queries",
       "path": "website/src/content/docs/guides/data/backends.md",
-      "line": 223,
+      "line": 226,
       "features": [],
       "text": "`Db::raw_sql` returns a `QueryResult`. Decode with\n`result.decode::<Model>()` (columns by name),\n`result.decode_values::<(A, B)>()` (columns by position), or\n`result.scalar()`. `Row::get_as::<T>(column)` decodes one value.\n`Db::raw_execute` returns the affected row count. Values are always bound;\nnever format untrusted input into the SQL text.\n\nMongoDB rejects raw SQL (`Feature::RawSql`); use\n`MongoBackend::raw_command`."
     },
@@ -283,7 +283,7 @@
       "kind": "guide",
       "title": "Backends > See also",
       "path": "website/src/content/docs/guides/data/backends.md",
-      "line": 235,
+      "line": 238,
       "features": [],
       "text": "- [Backend matrix](/siderite/reference/backend-matrix/)\n- [QueryPlan IR](/siderite/internals/query-plan/)\n- [Transactions](/siderite/guides/data/transactions/)"
     },
@@ -292,7 +292,7 @@
       "kind": "guide",
       "title": "Backends > Prefetch parameter admission",
       "path": "website/src/content/docs/guides/data/backends.md",
-      "line": 241,
+      "line": 244,
       "features": [],
       "text": "Prefetch constructs each source key's canonical identity once and uses a\nhash set to deduplicate keys. Repeated references share loaded objects;\ntarget queries are batched, without one query per source object. An explicit\nprefetch queryset uses its own database's capabilities. SQL adapters count\nits full compiled bind parameters before allocating the remaining IN-list\nbudget; NULL literals do not consume placeholders. Exhausted budgets fail\nbefore target I/O. Empty target querysets skip parameter counting and I/O.\n\n`Backend::read_parameter_count` returns an exact compiled read bind count;\nSQL extension backends must implement it to support bounded prefetch.\n`Db::read_parameter_count` exposes the same no-I/O diagnostic. Unknown SQL\ncounts fail explicitly. MongoDB batching uses its document batch capacity.\nSliced target querysets spanning multiple bind batches are rejected because\nrepeating a limit/offset per batch would change the queryset's meaning."
     },
@@ -301,7 +301,7 @@
       "kind": "guide",
       "title": "Backends > SQLx connection initialization",
       "path": "website/src/content/docs/guides/data/backends.md",
-      "line": 258,
+      "line": 261,
       "features": [],
       "text": "PostgreSQL/MySQL `connect_with(url, options)` installs mandatory session\nsettings and replaces `options.after_connect`. SQLx keeps that callback\nprivate, so a constructor cannot recover it for transparent composition.\nOther pool settings, including checkout validation, remain in effect.\nUse `connect_with_init(url, options, hook)` for custom session setup:\n\n```rust\nuse siderite_backends::connection_init::ConnectionInit;\nuse siderite_backends::postgres::PgBackend;\nuse sqlx::postgres::PgPoolOptions;\nuse std::sync::Arc;\n\nlet hook: ConnectionInit<sqlx::Postgres> = Arc::new(|conn, _| {\n    Box::pin(async move {\n        sqlx::Executor::execute(conn,\n            \"SET application_name = 'my-app'\").await?;\n        Ok(())\n    })\n});\nlet backend = PgBackend::connect_with_init(\n    &database_url, PgPoolOptions::new(), hook,\n).await?;\n```\n\nThe custom hook runs first on every fresh/replacement connection. Required\nUTC (and MySQL SQL-mode/GROUP_CONCAT) settings run afterwards, overriding\nconflicting values. A hook must leave no transaction or lock open. Its\nfailure rejects that physical connection; SQLx retries within the pool\nacquisition deadline and controls hook error logging. Callback capture\nmust be safe across concurrent connections. Wrapping an external pool with\n`from_pool` leaves session initialization and reset obligations to its owner.\nNative MySQL retains its separate explicit session/lease policy."
     },
@@ -310,7 +310,7 @@
       "kind": "guide",
       "title": "Backends > Verified network transports",
       "path": "website/src/content/docs/guides/data/backends.md",
-      "line": 293,
+      "line": 296,
       "features": [],
       "text": "Enable `siderite-backends/tls` for SQLx/Redis Rustls support. PostgreSQL\nuses `sslmode=verify-full` and a trusted `sslrootcert`; MySQL uses\n`ssl-mode=VERIFY_IDENTITY` and `ssl-ca`. Preferred modes do not establish\nverified peer identity and can permit plaintext fallback. Native MySQL\nalready compiles Rustls; its `connect_options` accepts `SslOpts` with private\nroots while preserving mandatory adapter/pool settings. Redis uses `rediss`\nand a configured Client plus `RedisStore::connect_with` for custom roots.\nMongoDB already enables Rustls; keep certificate/hostname verification on.\nSQLite has no network transport. Keep credentials and URLs out of logs.\n\nThe repository's `docs/BACKEND_TLS.md` documents deployment options and\n`scripts/test_tls.py` owns the local positive/negative verification fixture.\nThe rsa exception is reviewed in `docs/DEPENDENCY_EXCEPTIONS.md`: the pinned\nSQLx authentication path encrypts with the server's public key; no framework\nprivate-key operation was found. This rationale does not cover application\nRSA operations or substitute for verified TLS."
     },
@@ -2143,14 +2143,14 @@
       "path": "website/src/content/docs/tutorials/todo-mongo.md",
       "line": 24,
       "features": [],
-      "text": "Single-collection CRUD, `filter` / `exclude`, ordering, `limit` / `offset`,\n`count`, `save` (update by key). The `id` column is stored as `_id`; when\nit is omitted the backend generates increasing `i64` keys from\n`siderite_counters`."
+      "text": "Single-collection CRUD, `filter` / `exclude`, ordering, `limit` / `offset`,\n`count`, `save` (update by key). The `id` column is stored as `_id`; when\nit is omitted the backend generates `i64` keys from `siderite_counters`,\nreserving 64 at a time (keys from one process increase; a restart skips\nthe unused rest of a block)."
     },
     {
       "id": "tutorials/todo-mongo#what-the-backend-rejects",
       "kind": "guide",
       "title": "Todo on MongoDB > What the backend rejects",
       "path": "website/src/content/docs/tutorials/todo-mongo.md",
-      "line": 31,
+      "line": 32,
       "features": [],
       "text": "The MongoDB backend rejects, before any I/O, with a capability error (HTTP\n`501`): joins (`select_related`, foreign-key traversal), subqueries\n(`in_subquery`, `exists`), set operations (`union`, …), window functions,\nrow locking, `DISTINCT ON`, and array aggregates. Consequently there is no\n`ForeignKey` between models here, and no many-to-many (its queries use\nsubqueries).\n\nOther differences:\n\n- No SQL migrations: collections appear on first write. Unique constraints\n  exist only for `_id` unless created with\n  `MongoBackend::create_unique_index`.\n- Transactions need a replica set and are flat (no savepoints), so nested\n  `Db::transaction` and `bulk_create` on a transactional handle are\n  rejected.\n- Timestamps have millisecond precision."
     },
@@ -2159,7 +2159,7 @@
       "kind": "guide",
       "title": "Todo on MongoDB > See also",
       "path": "website/src/content/docs/tutorials/todo-mongo.md",
-      "line": 50,
+      "line": 51,
       "features": [],
       "text": "- [Backends](/siderite/guides/data/backends/)\n- [Backend matrix](/siderite/reference/backend-matrix/)\n- [Todo on SQLite](/siderite/tutorials/todo-sqlite/)"
     },
@@ -2440,14 +2440,14 @@
       "path": "CHANGELOG.md",
       "line": 3,
       "features": [],
-      "text": ""
+      "text": "### Changed\n- **ORM (MongoDB):** generated keys are reserved in blocks, like a SQL\n  sequence with `CACHE 64`: one `$inc` on `siderite_counters` reserves 64\n  keys that later inserts take from memory, so an insert without a key is\n  usually one round trip instead of two. Clones of a `MongoBackend` and its\n  transactions share the blocks; a bulk insert still gets consecutive keys\n  in input order (a new block of at least the batch size when the current\n  one is too small). Unused keys of a block are gaps when the process\n  stops, and keys from different processes interleave. The counter document\n  keeps its format (`seq` is now the last *reserved* key).\n  `MongoBackend::with_key_block_size(1)` restores one `$inc` per insert."
     },
     {
       "id": "changelog#0.1.0",
       "kind": "changelog",
       "title": "Changelog > 0.1.0",
       "path": "CHANGELOG.md",
-      "line": 5,
+      "line": 17,
       "features": [
         "mcp",
         "mysql-native",

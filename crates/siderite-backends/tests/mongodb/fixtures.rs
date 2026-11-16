@@ -30,6 +30,28 @@ impl TestDb {
         })
     }
 
+    /// A fresh database whose backend reserves generated keys `size` at a
+    /// time.
+    pub async fn with_key_block_size(size: u32) -> Option<Self> {
+        let t = Self::open().await?;
+        let backend = t.backend.with_key_block_size(size);
+        Some(Self {
+            db: Db::new(backend.clone()),
+            backend,
+        })
+    }
+
+    /// The `seq` of the `siderite_counters` document of `collection`.
+    pub async fn counter(&self, collection: &str) -> Option<i64> {
+        self.backend
+            .database()
+            .collection::<mongodb::bson::Document>("siderite_counters")
+            .find_one(mongodb::bson::doc! { "_id": collection })
+            .await
+            .unwrap()
+            .map(|d| d.get_i64("seq").unwrap())
+    }
+
     pub async fn seeded() -> Option<(Self, Seed)> {
         let t = Self::open().await?;
         let seed = seed(&t.db).await;

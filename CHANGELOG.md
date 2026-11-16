@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Changed
+- **ORM (MongoDB):** generated keys are reserved in blocks, like a SQL
+  sequence with `CACHE 64`: one `$inc` on `siderite_counters` reserves 64
+  keys that later inserts take from memory, so an insert without a key is
+  usually one round trip instead of two. Clones of a `MongoBackend` and its
+  transactions share the blocks; a bulk insert still gets consecutive keys
+  in input order (a new block of at least the batch size when the current
+  one is too small). Unused keys of a block are gaps when the process
+  stops, and keys from different processes interleave. The counter document
+  keeps its format (`seq` is now the last *reserved* key).
+  `MongoBackend::with_key_block_size(1)` restores one `$inc` per insert.
+
 ## [0.1.0] - 2026-11-13
 
 - Own HTTP/HTTP2 and WebSocket work through shutdown, with bounded transport

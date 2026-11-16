@@ -185,8 +185,11 @@ gates. This adapter is experimental and has not replaced the default driver.
   is enough). No savepoints, so `bulk_create` inside a transaction is a
   capability error.
 - A table is a collection. The primary key column (default `id`) is stored
-  as `_id`. Missing keys are generated as consecutive `i64` values from
-  `siderite_counters`, **outside** the transaction, so rollbacks leave gaps.
+  as `_id`. Missing keys are generated as `i64` values from
+  `siderite_counters`, **outside** the transaction, in blocks of 64 keys
+  per counter round trip (`MongoBackend::with_key_block_size`). A bulk
+  insert gets consecutive keys; rollbacks and restarts leave gaps, and keys
+  from different processes interleave rather than follow insertion order.
 - Reads compile to aggregation pipelines. Plans are checked and compiled
   entirely before any I/O.
 - Predicates follow SQL three-valued logic: `= NULL` means `IS NULL`.

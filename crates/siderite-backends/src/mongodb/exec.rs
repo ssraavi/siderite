@@ -4,11 +4,11 @@ use super::compile::{
     CompiledDelete, CompiledInsert, CompiledQuery, CompiledUpdate, CompiledWrite, Keys, UpdateSpec,
     compile_query, compile_write,
 };
+use super::keys::KeyAllocator;
 use super::value::from_bson;
 use ::mongodb::action::Action;
 use ::mongodb::bson::{Bson, Document, doc};
 use ::mongodb::error::{Error as DriverError, ErrorKind};
-use ::mongodb::options::ReturnDocument;
 use ::mongodb::{Client, ClientSession, Collection, Cursor, Database};
 use async_trait::async_trait;
 use siderite_orm::{
@@ -19,21 +19,21 @@ use siderite_orm::{
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-/// Collection holding one `{_id: <collection>, seq: <last key>}` document per
-/// collection with generated integer keys.
-const COUNTERS: &str = "siderite_counters";
-
 /// MongoDB adapter: compiles plans to filters and pipelines and runs them.
 ///
 /// Collections are named after tables. The primary-key column of a
 /// collection is stored as `_id` (see [`Keys`]); rows come back with `_id`
 /// renamed to that column. Integer keys that a plan does not supply are
-/// generated from a counter collection, `siderite_counters`.
+/// generated from a counter collection, `siderite_counters`, in blocks (see
+/// [`MongoBackend::with_key_block_size`]).
+///
+/// Clones share the connection pool and the cached key blocks.
 #[derive(Debug, Clone)]
 pub struct MongoBackend {
     client: Client,
     db: Database,
     keys: Arc<Keys>,
+    key_blocks: Arc<KeyAllocator>,
 }
 
 impl MongoBackend {
@@ -60,6 +60,7 @@ impl MongoBackend {
             db: client.database(database),
             client,
             keys: Arc::new(Keys::default()),
+            key_blocks: Arc::new(KeyAllocator::default()),
         }
     }
 
@@ -68,6 +69,28 @@ impl MongoBackend {
     #[must_use]
     pub fn with_keys(mut self, keys: Keys) -> Self {
         self.keys = Arc::new(keys);
+        self
+    }
+
+    /// Reserve generated keys `size` at a time (default 64).
+    ///
+    /// An insert that omits its key takes the next keys from a block this
+    /// backend reserved earlier; only when the block cannot serve the whole
+    /// insert does it reserve a new block of `max(rows, size)` keys with one
+    /// `$inc` on the collection's `siderite_counters` document (the rest of
+    /// the old block is skipped). A bulk insert always gets consecutive keys
+    /// in input order. Clones of the backend and its transactions share the
+    /// blocks, so call this before cloning.
+    ///
+    /// Keys reserved but never used are gaps: the rest of a block when the
+    /// process stops, and keys of rolled-back inserts. Processes reserve
+    /// separate blocks, so keys from different processes interleave and do
+    /// not follow insertion order across processes. `1` restores one counter
+    /// round trip per insert, with the counter always at the last key
+    /// handed out; `0` is treated as `1`.
+    #[must_use]
+    pub fn with_key_block_size(mut self, size: u32) -> Self {
+        self.key_blocks = Arc::new(KeyAllocator::new(size));
         self
     }
 
@@ -128,6 +151,7 @@ impl MongoBackend {
         let compiled = compile_query(plan, &self.keys)?;
         Io {
             db: &self.db,
+            key_blocks: &self.key_blocks,
             session,
         }
         .query(&compiled)
@@ -142,6 +166,7 @@ impl MongoBackend {
         let compiled = compile_write(plan, &self.keys)?;
         Io {
             db: &self.db,
+            key_blocks: &self.key_blocks,
             session,
         }
         .write(compiled)
@@ -234,6 +259,7 @@ impl Executor for MongoTransaction {
         let session = guard.as_mut().ok_or(QueryError::TransactionClosed)?;
         Io {
             db: &self.backend.db,
+            key_blocks: &self.backend.key_blocks,
             session: Some(session),
         }
         .query(&compiled)
@@ -246,6 +272,7 @@ impl Executor for MongoTransaction {
         let session = guard.as_mut().ok_or(QueryError::TransactionClosed)?;
         Io {
             db: &self.backend.db,
+            key_blocks: &self.backend.key_blocks,
             session: Some(session),
         }
         .write(compiled)
@@ -286,7 +313,7 @@ impl Transaction for MongoTransaction {
 
 /// Classify a driver error. Duplicate-key and validation failures are
 /// constraint violations; connection-level failures are connection errors.
-fn map_error(e: &DriverError) -> BackendError {
+pub(super) fn map_error(e: &DriverError) -> BackendError {
     let message = e.to_string();
     if message.contains("E11000")
         || message.contains("code: 11000")
@@ -342,6 +369,7 @@ fn doc_to_row(doc: Document, columns: &[String], pk: &str) -> Result<Row, QueryE
 /// Database access for one statement, on a session or the implicit one.
 struct Io<'a> {
     db: &'a Database,
+    key_blocks: &'a KeyAllocator,
     session: Option<&'a mut ClientSession>,
 }
 
@@ -448,24 +476,6 @@ impl Io<'_> {
         .map_err(|e| db_err(&e))
     }
 
-    /// Reserve `n` consecutive integer keys for `collection`; returns the
-    /// first. Runs outside the transaction (like a sequence) so concurrent
-    /// transactions never conflict on the counter; a rolled-back
-    /// transaction leaves a gap.
-    async fn reserve_keys(&self, collection: &str, n: usize) -> Result<i64, OrmError> {
-        let n = i64::try_from(n).map_err(|_| QueryError::InvalidPlan("too many rows".into()))?;
-        let counters: Collection<Document> = self.db.collection(COUNTERS);
-        let after = counters
-            .find_one_and_update(doc! { "_id": collection }, doc! { "$inc": { "seq": n } })
-            .upsert(true)
-            .return_document(ReturnDocument::After)
-            .await
-            .map_err(|e| db_err(&e))?
-            .and_then(|d| d.get("seq").and_then(as_i64))
-            .ok_or_else(|| BackendError::Database("key counter has no `seq`".into()))?;
-        Ok(after - n + 1)
-    }
-
     async fn query(&mut self, compiled: &CompiledQuery) -> Result<QueryResult, OrmError> {
         let docs = self
             .aggregate(&compiled.collection, compiled.pipeline.clone())
@@ -510,7 +520,9 @@ impl Io<'_> {
         }
         let missing = docs.iter().filter(|d| !d.contains_key("_id")).count();
         let mut next = if missing > 0 {
-            self.reserve_keys(&collection, missing).await?
+            self.key_blocks
+                .reserve(self.db, &collection, missing)
+                .await?
         } else {
             0
         };
@@ -620,14 +632,6 @@ impl Io<'_> {
             .into_iter()
             .filter_map(|d| d.get("_id").cloned())
             .collect())
-    }
-}
-
-fn as_i64(value: &Bson) -> Option<i64> {
-    match value {
-        Bson::Int32(i) => Some(i64::from(*i)),
-        Bson::Int64(i) => Some(*i),
-        _ => None,
     }
 }
 

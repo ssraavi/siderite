@@ -12,6 +12,7 @@ mod common;
 mod cursor;
 mod fixtures;
 mod functions;
+mod keys;
 mod lookups;
 mod queries;
 mod storage;
