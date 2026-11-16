@@ -3,6 +3,19 @@
 ## [Unreleased]
 
 ### Changed
+- **ORM (MongoDB):** simple reads run as `find` commands instead of
+  aggregation pipelines: a collection source without grouping, aggregates
+  or `DISTINCT`, a projection of plain columns under their own names (or
+  whole documents), ordering by plain columns, any filter, limit and
+  offset. A filter that is exactly one `_id` equality is sent as
+  `{_id: v}` and any ordering next to it is dropped, so a primary-key `get`
+  takes the server's `_id` fast path (about 170 to 125 µs per `get` in the
+  `mongo` bench). A limited `find` returns its whole result in the first
+  reply (limits above 101 also set `batchSize`), so no `getMore` or
+  `killCursors` follows. Everything else still compiles to a
+  pipeline, with the same rows. `compile::CompiledQuery` now carries
+  `read: Read` (`Read::Find(Box<FindQuery>)` or `Read::Pipeline(..)`) instead of
+  `pipeline`.
 - **ORM (MongoDB):** generated keys are reserved in blocks, like a SQL
   sequence with `CACHE 64`: one `$inc` on `siderite_counters` reserves 64
   keys that later inserts take from memory, so an insert without a key is

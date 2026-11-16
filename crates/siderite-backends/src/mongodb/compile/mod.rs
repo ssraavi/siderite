@@ -1,10 +1,12 @@
-//! Pure compiler: plans to MongoDB filters, update documents and pipelines.
+//! Pure compiler: plans to MongoDB `find` commands, filters, update
+//! documents and pipelines.
 //!
 //! Nothing here touches a server; every function returns an error for a plan
 //! the backend cannot express, so unsupported plans fail before any I/O.
 
 use super::value::to_bson;
 use ::mongodb::bson::{Bson, Document, doc};
+use ::mongodb::options::FindOptions;
 use siderite_orm::expr::{Aggregate, Column};
 use siderite_orm::{
     BackendCapabilities, BackendCapabilityError, BackendKind, DeletePlan, Expr, Feature,
@@ -15,6 +17,7 @@ use std::collections::HashMap;
 mod aggregate;
 mod expr;
 mod filter;
+mod find;
 mod pipeline;
 
 use expr::expr_bson;
@@ -63,21 +66,88 @@ impl Keys {
     }
 }
 
-/// A compiled read: run `pipeline` on `collection`.
+/// A compiled read: run [`read`](Self::read) on `collection`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompiledQuery {
-    /// Collection the pipeline runs on.
+    /// Collection the read runs on.
     pub collection: String,
-    /// Aggregation pipeline.
-    pub pipeline: Vec<Document>,
+    /// The command: a `find` for simple plans, otherwise an aggregation
+    /// pipeline.
+    pub read: Read,
     /// Output column names, in order. Empty means "every field of the
     /// document" (`_id` is renamed to [`pk`](Self::pk)).
     pub columns: Vec<String>,
     /// Primary-key column of the root collection.
     pub pk: String,
     /// The single row an ungrouped aggregate produces over no input (SQL
-    /// returns one row, `$group` returns none).
+    /// returns one row, `$group` returns none). Always `None` for a `find`.
     pub empty_row: Option<Vec<Value>>,
+}
+
+/// How a compiled read runs.
+///
+/// A plan on a collection (not a derived table) without grouping,
+/// aggregates or `DISTINCT`, whose projection names plain columns of the
+/// collection under their own names and whose ordering names plain
+/// columns, is a [`Find`](Read::Find); everything else is a
+/// [`Pipeline`](Read::Pipeline). Both return the same rows.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Read {
+    /// A `find` command.
+    Find(Box<FindQuery>),
+    /// An `aggregate` command with this pipeline.
+    Pipeline(Vec<Document>),
+}
+
+/// The parts of a `find` command.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct FindQuery {
+    /// Query filter (`{}` matches every document). A filter that is
+    /// exactly one `_id` equality with a scalar is written `{_id: v}`.
+    pub filter: Document,
+    /// Inclusion projection (`{field: 1, ..}`, with `_id: 0` unless the key
+    /// column is projected); `None` returns whole documents.
+    pub projection: Option<Document>,
+    /// Sort keys; `None` when the plan has no ordering, or when the filter
+    /// is a single `_id` equality (at most one document matches).
+    pub sort: Option<Document>,
+    /// Documents to skip (`OFFSET`), absent when zero.
+    pub skip: Option<u64>,
+    /// Maximum number of documents (`LIMIT`), never zero.
+    pub limit: Option<i64>,
+}
+
+impl FindQuery {
+    /// Driver options for this `find` (everything but the filter).
+    ///
+    /// A limited `find` returns its whole result in the reply to `find`
+    /// and the server closes the cursor, so no `getMore` or `killCursors`
+    /// follows (unless the documents exceed the 16 MiB reply limit, in
+    /// which case the driver fetches the rest). Up to
+    /// [`FIRST_BATCH`](Self::FIRST_BATCH) documents that is the server's
+    /// default; a larger limit also sets the batch size to the limit. A
+    /// smaller limit sets none, because any batch size keeps the server
+    /// off its express path for `_id` lookups.
+    #[must_use]
+    pub fn options(&self) -> FindOptions {
+        let mut options = FindOptions::default();
+        options.projection.clone_from(&self.projection);
+        options.sort.clone_from(&self.sort);
+        options.skip = self.skip;
+        options.limit = self.limit;
+        // The driver sends `limit + 1` when the two are equal (so the
+        // server closes the cursor), which must still fit an `i32`.
+        options.batch_size = self
+            .limit
+            .filter(|n| *n > Self::FIRST_BATCH)
+            .and_then(|n| u32::try_from(n).ok())
+            .filter(|n| *n < i32::MAX.unsigned_abs());
+        options
+    }
+
+    /// Documents in the server's first reply to a `find` without a batch
+    /// size.
+    pub const FIRST_BATCH: i64 = 101;
 }
 
 /// A compiled insert.
@@ -159,10 +229,19 @@ type Res<T> = Result<T, OrmError>;
 /// [`QueryError::InvalidPlan`] for plans it cannot express.
 pub fn compile_query(plan: &QueryPlan, keys: &Keys) -> Res<CompiledQuery> {
     plan.check(&BackendCapabilities::mongodb())?;
+    if let Some(built) = find::find(plan, keys)? {
+        return Ok(CompiledQuery {
+            collection: built.collection,
+            read: Read::Find(Box::new(built.find)),
+            columns: built.columns,
+            pk: built.pk,
+            empty_row: None,
+        });
+    }
     let built = build(plan, keys)?;
     Ok(CompiledQuery {
         collection: built.collection,
-        pipeline: built.pipeline,
+        read: Read::Pipeline(built.pipeline),
         columns: built.columns,
         pk: built.pk,
         empty_row: built.empty_row,

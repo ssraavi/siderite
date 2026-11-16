@@ -10,6 +10,7 @@
 #[path = "../common/mod.rs"]
 mod common;
 mod cursor;
+mod find;
 mod fixtures;
 mod functions;
 mod keys;

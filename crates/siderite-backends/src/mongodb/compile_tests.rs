@@ -2,7 +2,7 @@
 #![allow(clippy::unwrap_used)]
 
 use super::compile::{
-    CompiledQuery, CompiledWrite, Keys, UpdateSpec, compile_query, compile_write,
+    CompiledQuery, CompiledWrite, FindQuery, Keys, Read, UpdateSpec, compile_query, compile_write,
 };
 use ::mongodb::bson::{Bson, Document, Regex, doc};
 use siderite_orm::expr::{Column, DatePart, Field};
@@ -25,8 +25,28 @@ fn q(plan: &QueryPlan) -> CompiledQuery {
     compile_query(plan, &Keys::default()).unwrap()
 }
 
+/// The pipeline of a plan that must stay a pipeline.
+fn pipeline(plan: &QueryPlan) -> Vec<Document> {
+    match q(plan).read {
+        Read::Pipeline(p) => p,
+        Read::Find(f) => panic!("expected a pipeline, got {f:?}"),
+    }
+}
+
+/// The `find` of a plan that must become one.
+fn found(plan: &QueryPlan) -> FindQuery {
+    match q(plan).read {
+        Read::Find(f) => *f,
+        Read::Pipeline(p) => panic!("expected a find, got {p:?}"),
+    }
+}
+
+/// The filter of a plan, from its `find` or its leading `$match`.
 fn matched(plan: &QueryPlan) -> Document {
-    q(plan).pipeline[0].get_document("$match").unwrap().clone()
+    match q(plan).read {
+        Read::Find(f) => f.filter,
+        Read::Pipeline(p) => p[0].get_document("$match").unwrap().clone(),
+    }
 }
 
 fn base() -> QueryPlan {
@@ -36,23 +56,27 @@ fn base() -> QueryPlan {
 #[test]
 fn key_column_maps_to_id_everywhere() {
     let plan = base()
-        .filter(Expr::col("id").eq(5_i64))
-        .order_by(Expr::col("id"), OrderDirection::Desc);
-    let c = q(&plan);
-    assert_eq!(
-        c.pipeline[0],
-        doc! { "$match": { "_id": { "$eq": 5_i64 } } }
-    );
-    assert_eq!(c.pipeline[1], doc! { "$sort": { "_id": -1 } });
+        .filter(Expr::col("id").gt(5_i64))
+        .order_by(Expr::col("id"), OrderDirection::Desc)
+        .select(Expr::col("id"), None);
+    let f = found(&plan);
+    assert_eq!(f.filter, doc! { "_id": { "$gt": 5_i64 } });
+    assert_eq!(f.sort, Some(doc! { "_id": -1 }));
+    assert_eq!(f.projection, Some(doc! { "_id": 1 }));
+    // The same through a pipeline.
+    let p = pipeline(&plan.clone().select(lower(T::name.expr()), Some("l")));
+    assert_eq!(p[0], doc! { "$match": { "_id": { "$gt": 5_i64 } } });
+    assert_eq!(p[1], doc! { "$sort": { "_id": -1 } });
     let custom = compile_query(
         &base().filter(Expr::col("slug").eq("a")),
         &Keys::default().with("users", "slug"),
     )
     .unwrap();
-    assert_eq!(
-        custom.pipeline[0],
-        doc! { "$match": { "_id": { "$eq": "a" } } }
-    );
+    let Read::Find(f) = custom.read else {
+        panic!("not a find");
+    };
+    // A single key equality is the bare form the server answers fastest.
+    assert_eq!(f.filter, doc! { "_id": "a" });
     assert_eq!(custom.pk, "slug");
 }
 
@@ -120,7 +144,10 @@ fn boolean_structure_applies_de_morgan_when_negated() {
         matched(&base().filter(Expr::Or(vec![]))),
         doc! { "$expr": false }
     );
-    assert!(q(&base().filter(Expr::And(vec![]))).pipeline.is_empty());
+    assert_eq!(
+        found(&base().filter(Expr::And(vec![]))),
+        FindQuery::default()
+    );
 }
 
 #[test]
@@ -181,20 +208,111 @@ fn projection_and_ordering_compile_to_project_and_sort() {
         .limit(3);
     let c = q(&plan);
     assert_eq!(c.columns, ["id", "n", "one"]);
-    assert_eq!(c.pipeline.len(), 5);
-    assert!(c.pipeline[0].contains_key("$addFields"));
-    assert_eq!(c.pipeline[1], doc! { "$sort": { "__sort0": 1, "age": -1 } });
-    assert_eq!(c.pipeline[2], doc! { "$skip": 2_i64 });
-    assert_eq!(c.pipeline[3], doc! { "$limit": 3_i64 });
+    let p = pipeline(&plan);
+    assert_eq!(p.len(), 5);
+    assert!(p[0].contains_key("$addFields"));
+    assert_eq!(p[1], doc! { "$sort": { "__sort0": 1, "age": -1 } });
+    assert_eq!(p[2], doc! { "$skip": 2_i64 });
+    assert_eq!(p[3], doc! { "$limit": 3_i64 });
     assert_eq!(
-        c.pipeline[4],
+        p[4],
         doc! { "$project": {
             "_id": 0_i64, "id": "$_id", "n": "$name", "one": { "$literal": 1_i64 },
         } }
     );
     // Whole documents: temporaries are dropped afterwards.
-    let c = q(&base().order_by(lower(T::name.expr()), OrderDirection::Asc));
-    assert_eq!(c.pipeline.last().unwrap(), &doc! { "$unset": ["__sort0"] });
+    let p = pipeline(&base().order_by(lower(T::name.expr()), OrderDirection::Asc));
+    assert_eq!(p.last().unwrap(), &doc! { "$unset": ["__sort0"] });
+}
+
+#[test]
+fn simple_reads_compile_to_find() {
+    // A primary-key get: whole documents, the ordering dropped.
+    let get = base()
+        .filter(Expr::col("id").eq(1_i64))
+        .order_by(Expr::col("name"), OrderDirection::Asc)
+        .limit(2);
+    let c = q(&get);
+    assert!(c.columns.is_empty() && c.empty_row.is_none());
+    assert_eq!(
+        c.read,
+        Read::Find(Box::new(FindQuery {
+            filter: doc! { "_id": 1_i64 },
+            limit: Some(2),
+            ..FindQuery::default()
+        }))
+    );
+    // Filter, plain projection (alias equal to the name), ordering, paging.
+    let page = base()
+        .filter(T::age.gt(3).and(lower(T::name.expr()).eq("x")))
+        .select(Expr::col("name"), Some("name"))
+        .select(Expr::Column(Column::qualified("users", "age")), None)
+        .order_by(Expr::col("age"), OrderDirection::Desc)
+        .order_by(Expr::col("id"), OrderDirection::Asc)
+        .offset(5)
+        .limit(10);
+    let c = q(&page);
+    assert_eq!(c.columns, ["name", "age"]);
+    let f = found(&page);
+    assert!(f.filter.contains_key("$and"), "{:?}", f.filter);
+    assert_eq!(f.projection, Some(doc! { "name": 1, "age": 1, "_id": 0 }));
+    assert_eq!(f.sort, Some(doc! { "age": -1, "_id": 1 }));
+    assert_eq!((f.skip, f.limit), (Some(5), Some(10)));
+    // `id = x` among other conditions keeps the sort.
+    let and = base()
+        .filter(Expr::col("id").eq(1_i64).and(T::age.gt(1)))
+        .order_by(Expr::col("age"), OrderDirection::Asc);
+    assert_eq!(found(&and).sort, Some(doc! { "age": 1 }));
+    // Offset 0 is no skip; DISTINCT over whole documents is a no-op.
+    let f = found(&base().offset(0).distinct(DistinctMode::All));
+    assert_eq!(f.skip, None);
+}
+
+#[test]
+fn find_options_fetch_a_limited_result_in_one_batch() {
+    let o = found(&base().limit(500)).options();
+    assert_eq!((o.limit, o.batch_size), (Some(500), Some(500)));
+    // Up to the default first batch the server needs no batch size.
+    let o = found(&base().filter(Expr::col("id").eq(1_i64)).limit(2)).options();
+    assert_eq!((o.limit, o.batch_size), (Some(2), None));
+    let o = found(&base().limit(101)).options();
+    assert_eq!(o.batch_size, None);
+    let o = found(&base().limit(102)).options();
+    assert_eq!(o.batch_size, Some(102));
+    let o = found(&base().offset(3)).options();
+    assert_eq!((o.skip, o.limit, o.batch_size), (Some(3), None, None));
+    let o = found(&base().limit(u64::from(u32::MAX))).options();
+    assert_eq!(o.batch_size, None);
+}
+
+#[test]
+fn other_reads_stay_pipelines() {
+    let renamed = base().select(Expr::col("name"), Some("n"));
+    let computed = base().select(lower(T::name.expr()), Some("name"));
+    let sorted = base().order_by(lower(T::name.expr()), OrderDirection::Asc);
+    let distinct = base()
+        .select(Expr::col("team"), None)
+        .distinct(DistinctMode::All);
+    let counted = base().select(Count::all(), Some("n"));
+    let mut grouped = base().select(Expr::col("team"), None);
+    grouped.grouping = vec![Expr::col("team")];
+    let derived = QueryPlan::from_subquery(base().limit(3), "d");
+    let no_rows = base().limit(0);
+    for plan in [
+        renamed, computed, sorted, distinct, counted, grouped, derived, no_rows,
+    ] {
+        assert!(matches!(q(&plan).read, Read::Pipeline(_)), "{plan:?}");
+    }
+    // Invalid plans still fail on the find path.
+    let qualified = base().select(Expr::Column(Column::qualified("other", "a")), None);
+    assert!(compile_query(&qualified, &Keys::default()).is_err());
+    assert!(
+        compile_query(
+            &base().order_by(Expr::col("$a"), OrderDirection::Asc),
+            &Keys::default()
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -202,12 +320,11 @@ fn count_star_is_count_and_reports_the_empty_row() {
     let plan = base()
         .filter(T::age.gt(1))
         .select(Count::all(), Some("count"));
-    let c = q(&plan);
-    assert_eq!(c.pipeline[1], doc! { "$count": "count" });
-    assert_eq!(c.empty_row, Some(vec![Value::Int(0)]));
+    assert_eq!(pipeline(&plan)[1], doc! { "$count": "count" });
+    assert_eq!(q(&plan).empty_row, Some(vec![Value::Int(0)]));
     let sum = base().select(Sum::of(Expr::col("age")), Some("s"));
     assert_eq!(q(&sum).empty_row, Some(vec![Value::Null]));
-    assert!(q(&sum).pipeline[0].contains_key("$group"));
+    assert!(pipeline(&sum)[0].contains_key("$group"));
 }
 
 #[test]
@@ -219,21 +336,16 @@ fn grouping_having_and_ordering_use_group_output() {
         .order_by(Expr::from(Count::all()), OrderDirection::Desc);
     plan.grouping = vec![Expr::col("team")];
     plan.having = Some(Expr::from(Count::all()).gt(1_i64));
-    let c = q(&plan);
-    let group = c.pipeline[0].get_document("$group").unwrap();
+    let p = pipeline(&plan);
+    let group = p[0].get_document("$group").unwrap();
     assert_eq!(group.get_document("_id").unwrap(), &doc! { "k0": "$team" });
     assert!(group.contains_key("a0") && group.contains_key("a1"));
-    assert!(
-        c.pipeline[1]
-            .get_document("$match")
-            .unwrap()
-            .contains_key("$expr")
-    );
-    let project = c.pipeline[2].get_document("$project").unwrap();
+    assert!(p[1].get_document("$match").unwrap().contains_key("$expr"));
+    let project = p[2].get_document("$project").unwrap();
     assert_eq!(project.get_str("team").unwrap(), "$_id.k0");
     assert_eq!(project.get_str("n").unwrap(), "$a0");
-    assert_eq!(c.pipeline[3], doc! { "$sort": { "n": -1 } });
-    assert!(c.empty_row.is_none());
+    assert_eq!(p[3], doc! { "$sort": { "n": -1 } });
+    assert!(q(&plan).empty_row.is_none());
     // A bare column outside the grouping is rejected.
     let mut bad = base()
         .select(Expr::col("name"), Some("name"))
@@ -249,9 +361,8 @@ fn distinct_and_derived_tables_compile_to_stages() {
         .distinct(DistinctMode::All)
         .order_by(Expr::col("team"), OrderDirection::Asc)
         .limit(4);
-    let c = q(&plan);
-    let names: Vec<&str> = c
-        .pipeline
+    let p = pipeline(&plan);
+    let names: Vec<&str> = p
         .iter()
         .map(|s| s.keys().next().unwrap().as_str())
         .collect();
@@ -261,13 +372,13 @@ fn distinct_and_derived_tables_compile_to_stages() {
     );
     let counted =
         QueryPlan::from_subquery(base().limit(3), "counted").select(Count::all(), Some("count"));
-    let c = q(&counted);
-    assert_eq!(c.collection, "users");
-    assert_eq!(c.pipeline[0], doc! { "$limit": 3_i64 });
+    assert_eq!(q(&counted).collection, "users");
+    let p = pipeline(&counted);
+    assert_eq!(p[0], doc! { "$limit": 3_i64 });
     // The inner whole-document output exposes the key column.
-    assert_eq!(c.pipeline[1], doc! { "$addFields": { "id": "$_id" } });
-    assert_eq!(c.pipeline[2], doc! { "$unset": "_id" });
-    assert_eq!(c.pipeline.last().unwrap(), &doc! { "$count": "count" });
+    assert_eq!(p[1], doc! { "$addFields": { "id": "$_id" } });
+    assert_eq!(p[2], doc! { "$unset": "_id" });
+    assert_eq!(p.last().unwrap(), &doc! { "$count": "count" });
 }
 
 #[test]
@@ -342,12 +453,12 @@ fn expressions_compile_to_aggregation_operators() {
             },
             Some("c"),
         );
-    let text = format!("{:?}", q(&plan).pipeline[0]);
+    let text = format!("{:?}", pipeline(&plan)[0]);
     for needle in ["$substrCP", "$subtract", "$add", "$switch"] {
         assert!(text.contains(needle), "{needle} missing in {text}");
     }
     let dates = base().select(Expr::col("d").date_part(DatePart::Quarter), Some("q"));
-    assert!(format!("{:?}", q(&dates).pipeline[0]).contains("$dateFromString"));
+    assert!(format!("{:?}", pipeline(&dates)[0]).contains("$dateFromString"));
 }
 
 #[test]

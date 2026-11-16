@@ -1,6 +1,6 @@
 //! MongoDB backend: compiles the supported subset of a
 //! [`QueryPlan`](siderite_orm::QueryPlan) / [`WritePlan`](siderite_orm::WritePlan)
-//! to filters, update documents and aggregation pipelines.
+//! to `find` commands, filters, update documents and aggregation pipelines.
 //!
 //! * [`compile`] is a pure compiler (no server needed, unit-tested).
 //! * [`MongoBackend`] executes compiled plans (MongoDB 5.0+; transactions
@@ -44,6 +44,25 @@
 //! # Mapping table
 //!
 //! ## `QueryPlan` fields
+//!
+//! A read is a `find` command when it can be one (see
+//! [`compile::Read`]): the source is a table, there is no grouping,
+//! `having`, aggregate or `DISTINCT` over projected columns, the projection
+//! is empty or names plain columns of the collection under their own names,
+//! the ordering names plain columns, and the limit is not 0. Every other
+//! read is an aggregation pipeline. Both return the same rows; `find` is
+//! cheaper on the server (an `_id` equality takes the point-lookup fast
+//! path).
+//!
+//! | Field | `find` | Pipeline |
+//! |---|---|---|
+//! | `source` (table) | collection | collection |
+//! | `projection` | inclusion projection (`{col: 1, ..}`, `_id: 1` for the key column, `_id: 0` otherwise); empty = whole documents | see below |
+//! | `filter` | `filter`, the same document as the pipeline's `$match`, except that a filter that is exactly one `_id` equality with a scalar is `{_id: v}` (the form the server answers without parsing the query) | see below |
+//! | `ordering` | `sort` (dropped for such an `_id` equality: at most one document matches) | see below |
+//! | `limit` / `offset` | `limit` / `skip`; a limited result comes back whole in the first reply and the server closes the cursor (no `getMore` / `killCursors` unless the documents exceed 16 MiB): the first batch holds 101 documents by default, and a larger limit also sets `batchSize` to the limit (a smaller one sets none, which keeps `_id` lookups on the server's express path) | see below |
+//!
+//! Pipelines map every field:
 //!
 //! | Field | MongoDB |
 //! |---|---|

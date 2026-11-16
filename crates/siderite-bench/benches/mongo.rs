@@ -8,12 +8,16 @@
 //! `siderite_bench` database, which is dropped and seeded with 100 todos
 //! (and their key counter, as the benchmark runner seeds them) on start.
 //! Before measuring, the commands the ORM sends for one `get` and one
-//! `create` are printed, and the read's compiled pipeline is checked
-//! against them.
+//! `create` are printed, and the read's compiled `find` is checked against
+//! them.
 //!
 //! * `mongo_get_pk`: `orm` is `Todo::objects(&db).get(Todo::id.eq(1))`;
-//!   `driver_pipeline` runs the pipeline the ORM compiles; `driver_find_one`
-//!   is `find_one({_id: 1})`; `opmsg_find` is a `find` with `limit: 1` and
+//!   `driver_compiled` runs the `find` the ORM compiles (filter and
+//!   options) through the driver, so it mirrors what the ORM sends;
+//!   `driver_aggregate` is the reference for the former read path, the
+//!   pipeline the ORM compiled before reads became `find`s
+//!   (`[{$match: {_id: {$eq: 1}}}, {$limit: 2}]`); `driver_find_one` is
+//!   `find_one({_id: 1})`; `opmsg_find` is a `find` with `limit: 1` and
 //!   `singleBatch` on one raw connection; `compile` builds the queryset and
 //!   compiles it, without I/O.
 //! * `mongo_insert`: `orm` is `create` (keys come from blocks of 64 reserved
@@ -37,10 +41,10 @@ use mongodb::bson::{Bson, Document, doc};
 use mongodb::event::EventHandler;
 use mongodb::event::command::CommandEvent;
 use mongodb::options::{ClientOptions, ReturnDocument};
-use mongodb::{Client, Collection};
+use mongodb::{Client, Collection, Cursor};
 use siderite::orm::Db;
 use siderite::prelude::*;
-use siderite_backends::mongodb::compile::{CompiledQuery, compile_query};
+use siderite_backends::mongodb::compile::{CompiledQuery, FindQuery, Read, compile_query};
 use siderite_backends::mongodb::{Keys, MongoBackend};
 use std::fmt::Display;
 use std::hint::black_box;
@@ -196,25 +200,49 @@ async fn observe_orm(url: &str) -> Res<(Db, Vec<Document>)> {
 }
 
 /// Print what the ORM sends on `url` (without session and cluster-time
-/// fields) and check the read's pipeline is the one [`compile_get`]
-/// builds, so `driver_pipeline` and `compile` time the same query.
+/// fields) and check the read is the `find` [`compile_get`] builds, so
+/// `driver_compiled` and `compile` time the same query.
 async fn report_orm_commands(label: &str, url: &str) -> Res<()> {
     let (db, commands) = observe_orm(url).await?;
-    let mut compiled = None;
+    let mut sent = None;
     for mut command in commands {
         command.remove("lsid");
         command.remove("$clusterTime");
         println!("ORM command ({label}): {command}");
         if command.contains_key("aggregate") {
-            compiled = command.remove("pipeline");
+            return Err(format!("the ORM read is not a find: {command}").into());
+        }
+        if command.contains_key("find") {
+            sent = Some(command);
         }
     }
-    let ours = compile_get(&db, &Keys::default(), LOOKUP_ID)?.pipeline;
-    let ours = Bson::Array(ours.into_iter().map(Bson::Document).collect());
-    if compiled.as_ref() != Some(&ours) {
-        return Err(format!("ORM sent {compiled:?}, bench compiles {ours}").into());
+    let sent = sent.ok_or("the ORM sent no find")?;
+    let ours = compiled_find(&compile_get(&db, &Keys::default(), LOOKUP_ID)?)?;
+    let options = ours.options();
+    let int = |key: &str| match sent.get(key) {
+        Some(Bson::Int32(n)) => Some(i64::from(*n)),
+        Some(Bson::Int64(n)) => Some(*n),
+        _ => None,
+    };
+    let matches = sent.get_document("filter").ok() == Some(&ours.filter)
+        && sent.get_document("projection").ok() == ours.projection.as_ref()
+        && sent.get_document("sort").ok() == ours.sort.as_ref()
+        && int("skip") == ours.skip.and_then(|n| i64::try_from(n).ok())
+        && int("limit") == ours.limit
+        // The driver sends one more than an equal batch size.
+        && int("batchSize") == options.batch_size.map(|n| i64::from(n) + 1);
+    if !matches {
+        return Err(format!("ORM sent {sent}, bench compiles {ours:?}").into());
     }
     Ok(())
+}
+
+/// The `find` of a compiled read.
+fn compiled_find(compiled: &CompiledQuery) -> Res<FindQuery> {
+    match &compiled.read {
+        Read::Find(find) => Ok((**find).clone()),
+        Read::Pipeline(pipeline) => Err(format!("the get compiles to {pipeline:?}").into()),
+    }
 }
 
 /// The read `get(Todo::id.eq(id))` sends: the filter and `limit(2)`, with
@@ -236,13 +264,37 @@ async fn orm_get(db: &Db) -> Res<Todo> {
     Ok(Todo::objects(db).get(Todo::id.eq(LOOKUP_ID)).await?)
 }
 
-/// Variant `driver_pipeline`: `pipeline` through `aggregate`, every
+/// Variant `driver_compiled`: the compiled `find` with its options, every
 /// document collected as the ORM collects them.
-async fn driver_pipeline(
+async fn driver_compiled(todos: &Collection<Document>, find: &FindQuery) -> Res<Vec<Document>> {
+    let cursor = todos
+        .find(find.filter.clone())
+        .with_options(find.options())
+        .await?;
+    collect(cursor).await
+}
+
+/// The pipeline the ORM compiled for a primary-key `get` before simple
+/// reads became `find`s.
+fn former_pipeline() -> Vec<Document> {
+    vec![
+        doc! { "$match": { "_id": { "$eq": LOOKUP_ID } } },
+        doc! { "$limit": 2_i64 },
+    ]
+}
+
+/// Variant `driver_aggregate`: [`former_pipeline`] through `aggregate`,
+/// every document collected as the ORM collected them.
+async fn driver_aggregate(
     todos: &Collection<Document>,
     pipeline: &[Document],
 ) -> Res<Vec<Document>> {
-    let mut cursor = todos.aggregate(pipeline.to_vec()).await?;
+    let cursor = todos.aggregate(pipeline.to_vec()).await?;
+    collect(cursor).await
+}
+
+/// Every document of `cursor`.
+async fn collect(mut cursor: Cursor<Document>) -> Res<Vec<Document>> {
     let mut out = Vec::new();
     while cursor.advance().await? {
         out.push(cursor.deserialize_current()?);
@@ -350,21 +402,30 @@ where
 /// the seeded todo.
 fn bench_get(c: &mut Criterion, rt: &Runtime, target: &Target) -> Res<()> {
     let keys = Keys::default();
-    let pipeline = compile_get(&target.db, &keys, LOOKUP_ID)?.pipeline;
+    let find = compiled_find(&compile_get(&target.db, &keys, LOOKUP_ID)?)?;
+    let pipeline = former_pipeline();
     let todo = rt.block_on(orm_get(&target.db))?;
-    let raw = rt.block_on(driver_pipeline(&target.todos, &pipeline))?;
+    let compiled = rt.block_on(driver_compiled(&target.todos, &find))?;
+    let aggregated = rt.block_on(driver_aggregate(&target.todos, &pipeline))?;
     let found = rt.block_on(driver_find_one(&target.todos))?;
     rt.block_on(opmsg_find(&target.wire))?;
     let expected = todo_title(&found)?;
-    if raw != [found.clone()] || todo.id != LOOKUP_ID || todo.title != expected {
-        return Err(format!("variants disagree: {todo:?}, {raw:?}, {found}").into());
+    if compiled != [found.clone()]
+        || aggregated != compiled
+        || todo.id != LOOKUP_ID
+        || todo.title != expected
+    {
+        return Err(format!("variants disagree: {todo:?}, {compiled:?}, {found}").into());
     }
 
     let mut group = c.benchmark_group("mongo_get_pk");
     bench_op(&mut group, rt, "orm", || orm_get(&target.db));
-    let pipeline = &pipeline;
-    bench_op(&mut group, rt, "driver_pipeline", || {
-        driver_pipeline(&target.todos, pipeline)
+    let (find, pipeline) = (&find, &pipeline);
+    bench_op(&mut group, rt, "driver_compiled", || {
+        driver_compiled(&target.todos, find)
+    });
+    bench_op(&mut group, rt, "driver_aggregate", || {
+        driver_aggregate(&target.todos, pipeline)
     });
     bench_op(&mut group, rt, "driver_find_one", || {
         driver_find_one(&target.todos)

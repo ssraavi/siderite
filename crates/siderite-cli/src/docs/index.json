@@ -2440,14 +2440,14 @@
       "path": "CHANGELOG.md",
       "line": 3,
       "features": [],
-      "text": "### Changed\n- **ORM (MongoDB):** generated keys are reserved in blocks, like a SQL\n  sequence with `CACHE 64`: one `$inc` on `siderite_counters` reserves 64\n  keys that later inserts take from memory, so an insert without a key is\n  usually one round trip instead of two. Clones of a `MongoBackend` and its\n  transactions share the blocks; a bulk insert still gets consecutive keys\n  in input order (a new block of at least the batch size when the current\n  one is too small). Unused keys of a block are gaps when the process\n  stops, and keys from different processes interleave. The counter document\n  keeps its format (`seq` is now the last *reserved* key).\n  `MongoBackend::with_key_block_size(1)` restores one `$inc` per insert."
+      "text": "### Changed\n- **ORM (MongoDB):** simple reads run as `find` commands instead of\n  aggregation pipelines: a collection source without grouping, aggregates\n  or `DISTINCT`, a projection of plain columns under their own names (or\n  whole documents), ordering by plain columns, any filter, limit and\n  offset. A filter that is exactly one `_id` equality is sent as\n  `{_id: v}` and any ordering next to it is dropped, so a primary-key `get`\n  takes the server's `_id` fast path (about 170 to 125 µs per `get` in the\n  `mongo` bench). A limited `find` returns its whole result in the first\n  reply (limits above 101 also set `batchSize`), so no `getMore` or\n  `killCursors` follows. Everything else still compiles to a\n  pipeline, with the same rows. `compile::CompiledQuery` now carries\n  `read: Read` (`Read::Find(Box<FindQuery>)` or `Read::Pipeline(..)`) instead of\n  `pipeline`.\n- **ORM (MongoDB):** generated keys are reserved in blocks, like a SQL\n  sequence with `CACHE 64`: one `$inc` on `siderite_counters` reserves 64\n  keys that later inserts take from memory, so an insert without a key is\n  usually one round trip instead of two. Clones of a `MongoBackend` and its\n  transactions share the blocks; a bulk insert still gets consecutive keys\n  in input order (a new block of at least the batch size when the current\n  one is too small). Unused keys of a block are gaps when the process\n  stops, and keys from different processes interleave. The counter document\n  keeps its format (`seq` is now the last *reserved* key).\n  `MongoBackend::with_key_block_size(1)` restores one `$inc` per insert."
     },
     {
       "id": "changelog#0.1.0",
       "kind": "changelog",
       "title": "Changelog > 0.1.0",
       "path": "CHANGELOG.md",
-      "line": 17,
+      "line": 30,
       "features": [
         "mcp",
         "mysql-native",

@@ -41,7 +41,7 @@ This page is the “why”.
    immutable `QueryPlan`.
 3. The backend checks `plan.required_features()` against
    `BackendCapabilities`.
-4. The dialect compiler emits SQL (or a MongoDB aggregation pipeline) plus
+4. The dialect compiler emits SQL (or a MongoDB `find` or aggregation pipeline) plus
    bind parameters.
 5. The executor returns `QueryResult { rows }`. Typed decoding is
    `Model::from_row`.

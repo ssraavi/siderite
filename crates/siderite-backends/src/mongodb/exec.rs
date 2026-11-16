@@ -1,14 +1,14 @@
 //! The MongoDB executor: [`MongoBackend`] and its transactions.
 
 use super::compile::{
-    CompiledDelete, CompiledInsert, CompiledQuery, CompiledUpdate, CompiledWrite, Keys, UpdateSpec,
-    compile_query, compile_write,
+    CompiledDelete, CompiledInsert, CompiledQuery, CompiledUpdate, CompiledWrite, Keys, Read,
+    UpdateSpec, compile_query, compile_write,
 };
 use super::keys::KeyAllocator;
 use super::value::from_bson;
-use ::mongodb::action::Action;
 use ::mongodb::bson::{Bson, Document, doc};
 use ::mongodb::error::{Error as DriverError, ErrorKind};
+use ::mongodb::options::FindOptions;
 use ::mongodb::{Client, ClientSession, Collection, Cursor, Database};
 use async_trait::async_trait;
 use siderite_orm::{
@@ -19,7 +19,8 @@ use siderite_orm::{
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-/// MongoDB adapter: compiles plans to filters and pipelines and runs them.
+/// MongoDB adapter: compiles plans to `find` commands, filters and
+/// pipelines and runs them.
 ///
 /// Collections are named after tables. The primary-key column of a
 /// collection is stored as `_id` (see [`Keys`]); rows come back with `_id`
@@ -154,7 +155,7 @@ impl MongoBackend {
             key_blocks: &self.key_blocks,
             session,
         }
-        .query(&compiled)
+        .query(compiled)
         .await
     }
 
@@ -262,7 +263,7 @@ impl Executor for MongoTransaction {
             key_blocks: &self.backend.key_blocks,
             session: Some(session),
         }
-        .query(&compiled)
+        .query(compiled)
         .await
     }
 
@@ -412,7 +413,7 @@ impl Io<'_> {
         &mut self,
         collection: &str,
         filter: Document,
-        projection: Option<Document>,
+        options: FindOptions,
     ) -> Result<Vec<Document>, OrmError> {
         let coll = self.coll(collection);
         let mut out = Vec::new();
@@ -420,7 +421,7 @@ impl Io<'_> {
             Some(session) => {
                 let mut cursor = coll
                     .find(filter)
-                    .optional(projection, |a, p| a.projection(p))
+                    .with_options(options)
                     .session(&mut *session)
                     .await
                     .map_err(|e| db_err(&e))?;
@@ -431,7 +432,7 @@ impl Io<'_> {
             None => {
                 let cursor = coll
                     .find(filter)
-                    .optional(projection, |a, p| a.projection(p))
+                    .with_options(options)
                     .await
                     .map_err(|e| db_err(&e))?;
                 out = drain(cursor).await?;
@@ -476,10 +477,15 @@ impl Io<'_> {
         .map_err(|e| db_err(&e))
     }
 
-    async fn query(&mut self, compiled: &CompiledQuery) -> Result<QueryResult, OrmError> {
-        let docs = self
-            .aggregate(&compiled.collection, compiled.pipeline.clone())
-            .await?;
+    async fn query(&mut self, compiled: CompiledQuery) -> Result<QueryResult, OrmError> {
+        let docs = match compiled.read {
+            Read::Find(find) => {
+                let options = find.options();
+                self.find(&compiled.collection, find.filter, options)
+                    .await?
+            }
+            Read::Pipeline(pipeline) => self.aggregate(&compiled.collection, pipeline).await?,
+        };
         if docs.is_empty()
             && let Some(values) = &compiled.empty_row
         {
@@ -578,7 +584,7 @@ impl Io<'_> {
         let by_id = doc! { "_id": { "$in": ids } };
         let matched = self.update_many(&collection, by_id.clone(), update).await?;
         let rows = self
-            .find(&collection, by_id, None)
+            .find(&collection, by_id, FindOptions::default())
             .await?
             .into_iter()
             .map(|d| doc_to_row(d, &returning, &pk))
@@ -603,7 +609,9 @@ impl Io<'_> {
                 returning: Vec::new(),
             });
         }
-        let docs = self.find(&collection, filter, None).await?;
+        let docs = self
+            .find(&collection, filter, FindOptions::default())
+            .await?;
         let ids: Vec<Bson> = docs.iter().filter_map(|d| d.get("_id").cloned()).collect();
         if ids.is_empty() {
             return Ok(ExecResult::default());
@@ -627,7 +635,13 @@ impl Io<'_> {
         filter: Document,
     ) -> Result<Vec<Bson>, OrmError> {
         Ok(self
-            .find(collection, filter, Some(doc! { "_id": 1_i32 }))
+            .find(
+                collection,
+                filter,
+                FindOptions::builder()
+                    .projection(doc! { "_id": 1_i32 })
+                    .build(),
+            )
             .await?
             .into_iter()
             .filter_map(|d| d.get("_id").cloned())
