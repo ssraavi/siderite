@@ -130,9 +130,25 @@ impl FindQuery {
     /// off its express path for `_id` lookups.
     #[must_use]
     pub fn options(&self) -> FindOptions {
-        let mut options = FindOptions::default();
+        let mut options = self.limits();
         options.projection.clone_from(&self.projection);
         options.sort.clone_from(&self.sort);
+        options
+    }
+
+    /// The filter and [`options`](Self::options), moved out of the query
+    /// rather than copied.
+    #[must_use]
+    pub fn into_command(self) -> (Document, FindOptions) {
+        let mut options = self.limits();
+        options.projection = self.projection;
+        options.sort = self.sort;
+        (self.filter, options)
+    }
+
+    /// Options holding only `skip`, `limit` and the batch size.
+    fn limits(&self) -> FindOptions {
+        let mut options = FindOptions::default();
         options.skip = self.skip;
         options.limit = self.limit;
         // The driver sends `limit + 1` when the two are equal (so the

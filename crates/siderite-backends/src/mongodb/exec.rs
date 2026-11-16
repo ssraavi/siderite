@@ -1,19 +1,19 @@
 //! The MongoDB executor: [`MongoBackend`] and its transactions.
 
 use super::compile::{
-    CompiledDelete, CompiledInsert, CompiledQuery, CompiledUpdate, CompiledWrite, Keys, Read,
-    UpdateSpec, compile_query, compile_write,
+    CompiledDelete, CompiledInsert, CompiledQuery, CompiledUpdate, CompiledWrite, FindQuery, Keys,
+    Read, UpdateSpec, compile_query, compile_write,
 };
+use super::decode::{Collect, Decoder, doc_to_row, raw_id};
 use super::keys::KeyAllocator;
-use super::value::from_bson;
+use ::mongodb::bson::raw::RawDocument;
 use ::mongodb::bson::{Bson, Document, doc};
 use ::mongodb::error::{Error as DriverError, ErrorKind};
-use ::mongodb::options::FindOptions;
-use ::mongodb::{Client, ClientSession, Collection, Cursor, Database};
+use ::mongodb::{Client, ClientSession, Collection, Database};
 use async_trait::async_trait;
 use siderite_orm::{
     Backend, BackendCapabilities, BackendCapabilityError, BackendError, BackendKind, ExecResult,
-    Executor, Feature, IsolationLevel, OrmError, QueryError, QueryPlan, QueryResult, Row,
+    Executor, Feature, IsolationLevel, OrmError, QueryError, QueryPlan, QueryResult, RowSink,
     Transaction, Value, WritePlan,
 };
 use std::sync::Arc;
@@ -148,14 +148,15 @@ impl MongoBackend {
         &self,
         plan: &QueryPlan,
         session: Option<&mut ClientSession>,
-    ) -> Result<QueryResult, OrmError> {
+        sink: &mut dyn RowSink,
+    ) -> Result<(), OrmError> {
         let compiled = compile_query(plan, &self.keys)?;
         Io {
             db: &self.db,
             key_blocks: &self.key_blocks,
             session,
         }
-        .query(compiled)
+        .query(compiled, sink)
         .await
     }
 
@@ -186,7 +187,14 @@ impl Executor for MongoBackend {
     }
 
     async fn fetch(&self, plan: &QueryPlan) -> Result<QueryResult, OrmError> {
-        self.run_fetch(plan, None).await
+        let mut rows = Collect::default();
+        self.run_fetch(plan, None, &mut rows).await?;
+        Ok(QueryResult { rows: rows.rows })
+    }
+
+    /// Decodes each document straight from the driver's reply.
+    async fn fetch_each(&self, plan: &QueryPlan, sink: &mut dyn RowSink) -> Result<(), OrmError> {
+        self.run_fetch(plan, None, sink).await
     }
 
     async fn execute(&self, plan: &WritePlan) -> Result<ExecResult, OrmError> {
@@ -254,6 +262,13 @@ impl Executor for MongoTransaction {
     }
 
     async fn fetch(&self, plan: &QueryPlan) -> Result<QueryResult, OrmError> {
+        let mut rows = Collect::default();
+        self.fetch_each(plan, &mut rows).await?;
+        Ok(QueryResult { rows: rows.rows })
+    }
+
+    /// Decodes each document straight from the driver's reply.
+    async fn fetch_each(&self, plan: &QueryPlan, sink: &mut dyn RowSink) -> Result<(), OrmError> {
         // Compile before locking: unsupported plans fail without I/O.
         let compiled = compile_query(plan, &self.backend.keys)?;
         let mut guard = self.session.lock().await;
@@ -263,7 +278,7 @@ impl Executor for MongoTransaction {
             key_blocks: &self.backend.key_blocks,
             session: Some(session),
         }
-        .query(compiled)
+        .query(compiled, sink)
         .await
     }
 
@@ -335,38 +350,6 @@ fn db_err(e: &DriverError) -> OrmError {
     map_error(e).into()
 }
 
-/// Rows of `doc`: the requested `columns`, or every field when empty
-/// (`_id` renamed to `pk`).
-fn doc_to_row(doc: Document, columns: &[String], pk: &str) -> Result<Row, QueryError> {
-    if columns.is_empty() {
-        let has_pk_field = doc.contains_key(pk);
-        let mut out = Vec::with_capacity(doc.len());
-        for (key, value) in doc {
-            let name = if key == "_id" {
-                if has_pk_field {
-                    continue;
-                }
-                pk.to_owned()
-            } else {
-                key
-            };
-            let value = from_bson(value, &name)?;
-            out.push((name, value));
-        }
-        return Ok(Row::new(out));
-    }
-    let mut out = Vec::with_capacity(columns.len());
-    for column in columns {
-        let key = if column == pk { "_id" } else { column.as_str() };
-        let value = match doc.get(key) {
-            Some(bson) => from_bson(bson.clone(), column)?,
-            None => Value::Null,
-        };
-        out.push((column.clone(), value));
-    }
-    Ok(Row::new(out))
-}
-
 /// Database access for one statement, on a session or the implicit one.
 struct Io<'a> {
     db: &'a Database,
@@ -383,65 +366,48 @@ impl Io<'_> {
         self.session.as_deref_mut()
     }
 
-    async fn aggregate(
-        &mut self,
-        collection: &str,
-        pipeline: Vec<Document>,
-    ) -> Result<Vec<Document>, OrmError> {
+    /// Run `read` on `collection`, handing each document to `each` as the
+    /// driver reads it.
+    async fn each<F>(&mut self, collection: &str, read: Read, mut each: F) -> Result<(), OrmError>
+    where
+        F: FnMut(&RawDocument) -> Result<(), OrmError> + Send,
+    {
         let coll = self.coll(collection);
-        let mut out = Vec::new();
         match self.session() {
             Some(session) => {
-                let mut cursor = coll
-                    .aggregate(pipeline)
-                    .session(&mut *session)
-                    .await
-                    .map_err(|e| db_err(&e))?;
+                let mut cursor = match read {
+                    Read::Find(find) => {
+                        let (filter, options) = find.into_command();
+                        let find = coll.find(filter).with_options(options);
+                        find.session(&mut *session).await
+                    }
+                    Read::Pipeline(pipeline) => {
+                        coll.aggregate(pipeline).session(&mut *session).await
+                    }
+                }
+                .map_err(|e| db_err(&e))?;
                 while cursor.advance(session).await.map_err(|e| db_err(&e))? {
-                    out.push(cursor.deserialize_current().map_err(|e| db_err(&e))?);
+                    each(cursor.current())?;
                 }
             }
             None => {
-                let cursor = coll.aggregate(pipeline).await.map_err(|e| db_err(&e))?;
-                out = drain(cursor).await?;
-            }
-        }
-        Ok(out)
-    }
-
-    async fn find(
-        &mut self,
-        collection: &str,
-        filter: Document,
-        options: FindOptions,
-    ) -> Result<Vec<Document>, OrmError> {
-        let coll = self.coll(collection);
-        let mut out = Vec::new();
-        match self.session() {
-            Some(session) => {
-                let mut cursor = coll
-                    .find(filter)
-                    .with_options(options)
-                    .session(&mut *session)
-                    .await
-                    .map_err(|e| db_err(&e))?;
-                while cursor.advance(session).await.map_err(|e| db_err(&e))? {
-                    out.push(cursor.deserialize_current().map_err(|e| db_err(&e))?);
+                let mut cursor = match read {
+                    Read::Find(find) => {
+                        let (filter, options) = find.into_command();
+                        coll.find(filter).with_options(options).await
+                    }
+                    Read::Pipeline(pipeline) => coll.aggregate(pipeline).await,
+                }
+                .map_err(|e| db_err(&e))?;
+                while cursor.advance().await.map_err(|e| db_err(&e))? {
+                    each(cursor.current())?;
                 }
             }
-            None => {
-                let cursor = coll
-                    .find(filter)
-                    .with_options(options)
-                    .await
-                    .map_err(|e| db_err(&e))?;
-                out = drain(cursor).await?;
-            }
         }
-        Ok(out)
+        Ok(())
     }
 
-    async fn insert_many(&mut self, collection: &str, docs: Vec<Document>) -> Result<(), OrmError> {
+    async fn insert_many(&mut self, collection: &str, docs: &[Document]) -> Result<(), OrmError> {
         let coll = self.coll(collection);
         match self.session() {
             Some(session) => coll.insert_many(docs).session(session).await,
@@ -477,33 +443,29 @@ impl Io<'_> {
         .map_err(|e| db_err(&e))
     }
 
-    async fn query(&mut self, compiled: CompiledQuery) -> Result<QueryResult, OrmError> {
-        let docs = match compiled.read {
-            Read::Find(find) => {
-                let options = find.options();
-                self.find(&compiled.collection, find.filter, options)
-                    .await?
-            }
-            Read::Pipeline(pipeline) => self.aggregate(&compiled.collection, pipeline).await?,
-        };
-        if docs.is_empty()
-            && let Some(values) = &compiled.empty_row
-        {
-            let row = compiled
-                .columns
-                .iter()
-                .cloned()
-                .zip(values.iter().cloned())
-                .collect();
-            return Ok(QueryResult {
-                rows: vec![Row::new(row)],
-            });
+    async fn query(
+        &mut self,
+        compiled: CompiledQuery,
+        sink: &mut dyn RowSink,
+    ) -> Result<(), OrmError> {
+        let CompiledQuery {
+            collection,
+            read,
+            columns,
+            pk,
+            empty_row,
+        } = compiled;
+        let mut decoder = Decoder::new(columns, pk);
+        let mut seen = false;
+        self.each(&collection, read, |doc| {
+            seen = true;
+            Ok(decoder.push(doc, sink)?)
+        })
+        .await?;
+        if !seen && let Some(values) = empty_row {
+            decoder.push_values(values, sink)?;
         }
-        let rows = docs
-            .into_iter()
-            .map(|d| doc_to_row(d, &compiled.columns, &compiled.pk))
-            .collect::<Result<_, _>>()?;
-        Ok(QueryResult { rows })
+        Ok(())
     }
 
     async fn write(&mut self, compiled: CompiledWrite) -> Result<ExecResult, OrmError> {
@@ -545,16 +507,17 @@ impl Io<'_> {
                 with_id
             })
             .collect();
-        self.insert_many(&collection, docs.clone()).await?;
+        self.insert_many(&collection, &docs).await?;
         let mut result = ExecResult {
             rows_affected: docs.len() as u64,
             returning: Vec::new(),
         };
         if !returning.is_empty() {
             // Echo what was stored (values as BSON holds them).
+            let header: Arc<[String]> = returning.into();
             result.returning = docs
                 .into_iter()
-                .map(|d| doc_to_row(d, &returning, &pk))
+                .map(|d| doc_to_row(d, &header, &pk))
                 .collect::<Result<_, _>>()?;
         }
         Ok(result)
@@ -583,15 +546,15 @@ impl Io<'_> {
         }
         let by_id = doc! { "_id": { "$in": ids } };
         let matched = self.update_many(&collection, by_id.clone(), update).await?;
-        let rows = self
-            .find(&collection, by_id, FindOptions::default())
-            .await?
-            .into_iter()
-            .map(|d| doc_to_row(d, &returning, &pk))
-            .collect::<Result<_, _>>()?;
+        let mut rows = Collect::default();
+        let mut decoder = Decoder::new(returning, pk);
+        self.each(&collection, find_read(by_id, None), |doc| {
+            Ok(decoder.push(doc, &mut rows)?)
+        })
+        .await?;
         Ok(ExecResult {
             rows_affected: matched,
-            returning: rows,
+            returning: rows.rows,
         })
     }
 
@@ -609,23 +572,24 @@ impl Io<'_> {
                 returning: Vec::new(),
             });
         }
-        let docs = self
-            .find(&collection, filter, FindOptions::default())
-            .await?;
-        let ids: Vec<Bson> = docs.iter().filter_map(|d| d.get("_id").cloned()).collect();
+        // Read the rows before deleting them, keeping their keys.
+        let mut ids = Vec::new();
+        let mut rows = Collect::default();
+        let mut decoder = Decoder::new(returning, pk);
+        self.each(&collection, find_read(filter, None), |doc| {
+            ids.extend(raw_id(doc)?);
+            Ok(decoder.push(doc, &mut rows)?)
+        })
+        .await?;
         if ids.is_empty() {
             return Ok(ExecResult::default());
         }
         let deleted = self
             .delete_many(&collection, doc! { "_id": { "$in": ids } })
             .await?;
-        let rows = docs
-            .into_iter()
-            .map(|d| doc_to_row(d, &returning, &pk))
-            .collect::<Result<_, _>>()?;
         Ok(ExecResult {
             rows_affected: deleted,
-            returning: rows,
+            returning: rows.rows,
         })
     }
 
@@ -634,25 +598,23 @@ impl Io<'_> {
         collection: &str,
         filter: Document,
     ) -> Result<Vec<Bson>, OrmError> {
-        Ok(self
-            .find(
-                collection,
-                filter,
-                FindOptions::builder()
-                    .projection(doc! { "_id": 1_i32 })
-                    .build(),
-            )
-            .await?
-            .into_iter()
-            .filter_map(|d| d.get("_id").cloned())
-            .collect())
+        let mut ids = Vec::new();
+        let read = find_read(filter, Some(doc! { "_id": 1_i32 }));
+        self.each(collection, read, |doc| {
+            ids.extend(raw_id(doc)?);
+            Ok(())
+        })
+        .await?;
+        Ok(ids)
     }
 }
 
-async fn drain(mut cursor: Cursor<Document>) -> Result<Vec<Document>, OrmError> {
-    let mut out = Vec::new();
-    while cursor.advance().await.map_err(|e| db_err(&e))? {
-        out.push(cursor.deserialize_current().map_err(|e| db_err(&e))?);
-    }
-    Ok(out)
+/// A plain `find` of `filter`, returning `projection` (whole documents
+/// when `None`).
+fn find_read(filter: Document, projection: Option<Document>) -> Read {
+    Read::Find(Box::new(FindQuery {
+        filter,
+        projection,
+        ..FindQuery::default()
+    }))
 }

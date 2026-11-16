@@ -3,6 +3,20 @@
 ## [Unreleased]
 
 ### Changed
+- **ORM (MongoDB):** reads decode each result document straight from the
+  raw BSON of the server's reply: `MongoBackend` and its transactions
+  implement `Executor::fetch_each`, so `QuerySet::all`/`get` hand every
+  document to the model decoder in place, without building a `Document`, a
+  `Row` or a `QueryResult`, and each projected cell is decoded only when the
+  model takes it. Every row of a result shares one column header (so the
+  model's column plan is resolved once per result, not once per row), and
+  `fetch` returns `Row`s over that shared header. Values, errors, `_id`
+  renaming, missing fields (`NULL`) and the empty-aggregate row are
+  unchanged. `GET /todos` (20 todos) in the benchmark app serves about 1.27x
+  the requests per second at one worker, at about 22% less server CPU per
+  request; a primary-key `get` is unchanged. Inserts with `RETURNING` no
+  longer copy the inserted documents. `compile::FindQuery::into_command`
+  moves the filter and options out of a compiled `find`.
 - **ORM (MongoDB):** simple reads run as `find` commands instead of
   aggregation pipelines: a collection source without grouping, aggregates
   or `DISTINCT`, a projection of plain columns under their own names (or

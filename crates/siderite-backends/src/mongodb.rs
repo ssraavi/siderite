@@ -8,6 +8,9 @@
 //!   [`Backend`](siderite_orm::Backend) / [`Executor`](siderite_orm::Executor)
 //!   traits as the SQL adapters, so it plugs into [`Db`](siderite_orm::Db).
 //! * [`value`] maps [`Value`](siderite_orm::Value) to and from BSON.
+//!   Read results are decoded from the raw BSON of the server's reply
+//!   with that mapping: `Executor::fetch_each` hands each document to the
+//!   model decoder in place, without building a `Document` or a `Row`.
 //!
 //! Anything the backend cannot express fails **before any I/O**, with a
 //! capability error ([`BackendCapabilities::mongodb`](siderite_orm::BackendCapabilities::mongodb),
@@ -177,6 +180,7 @@
 pub mod compile;
 #[cfg(test)]
 mod compile_tests;
+mod decode;
 mod exec;
 mod keys;
 pub mod value;

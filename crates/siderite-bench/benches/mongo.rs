@@ -1,6 +1,6 @@
-//! MongoDB: a primary-key read and a single-document insert through the
-//! ORM, through the raw driver, and as a hand-rolled `OP_MSG` round trip
-//! (the floor), plus the compile-only cost of the read.
+//! MongoDB: a primary-key read, a page of 20 todos and a single-document
+//! insert through the ORM, through the raw driver, and as a hand-rolled
+//! `OP_MSG` round trip (the floor), plus the compile-only cost of the read.
 //!
 //! Needs a live server: set `MONGODB_URL` (for example
 //! `mongodb://127.0.0.1:27017/?replicaSet=rs0`). Without it the binary
@@ -20,6 +20,11 @@
 //!   `find_one({_id: 1})`; `opmsg_find` is a `find` with `limit: 1` and
 //!   `singleBatch` on one raw connection; `compile` builds the queryset and
 //!   compiles it, without I/O.
+//! * `mongo_list`: `orm` is `Todo::objects(&db).limit(20).all()`, the
+//!   first page `GET /todos` reads (newest first); `driver_compiled` runs
+//!   the `find` the ORM compiles and collects every document as a
+//!   `Document`; `driver_raw` runs the same `find` and only walks each
+//!   reply document's raw BSON, the floor for decoding through the driver.
 //! * `mongo_insert`: `orm` is `create` (keys come from blocks of 64 reserved
 //!   with one counter update, so most inserts are one round trip);
 //!   `driver_counter_insert` reserves each key from the counter
@@ -66,6 +71,8 @@ const COUNTERS: &str = "siderite_counters";
 const SEEDED: i64 = 100;
 /// The key every read fetches, as `GET /todos/1` does.
 const LOOKUP_ID: i64 = 1;
+/// Todos on the page `GET /todos` lists.
+const PAGE: usize = 20;
 /// Title of every inserted todo, as the HTTP benchmark posts it.
 const TITLE: &str = "x";
 /// Client-side keys of each target start at a multiple of this, far above
@@ -327,6 +334,33 @@ async fn opmsg_find(wire: &opmsg::Conn) -> Res<()> {
     .await
 }
 
+/// The read `GET /todos` sends: the first page in the model's ordering.
+fn list_queryset(db: &Db) -> QuerySet<Todo> {
+    Todo::objects(db).limit(PAGE as u64)
+}
+
+/// Variant `orm` of `mongo_list`.
+async fn orm_list(db: &Db) -> Res<Vec<Todo>> {
+    Ok(list_queryset(db).all().await?)
+}
+
+/// Variant `driver_raw` of `mongo_list`: the compiled `find`, walking
+/// every field of each document without decoding it.
+async fn driver_raw(todos: &Collection<Document>, find: &FindQuery) -> Res<usize> {
+    let mut cursor = todos
+        .find(find.filter.clone())
+        .with_options(find.options())
+        .await?;
+    let mut fields = 0;
+    while cursor.advance().await? {
+        for field in cursor.current() {
+            black_box(field?);
+            fields += 1;
+        }
+    }
+    Ok(fields)
+}
+
 /// Variant `orm` of `mongo_insert`.
 async fn orm_create(db: &Db) -> Res<Todo> {
     let todo = Todo {
@@ -438,6 +472,42 @@ fn bench_get(c: &mut Criterion, rt: &Runtime, target: &Target) -> Res<()> {
     Ok(())
 }
 
+/// Group `mongo_list` on `target`, after checking the variants read the
+/// same page.
+fn bench_list(c: &mut Criterion, rt: &Runtime, target: &Target) -> Res<()> {
+    let find = compiled_find(&compile_query(
+        list_queryset(&target.db).plan(),
+        &Keys::default(),
+    )?)?;
+    let todos = rt.block_on(orm_list(&target.db))?;
+    let docs = rt.block_on(driver_compiled(&target.todos, &find))?;
+    let fields = rt.block_on(driver_raw(&target.todos, &find))?;
+    let ids: Vec<i64> = docs
+        .iter()
+        .map(|d| d.get_i64("_id"))
+        .collect::<Result<_, _>>()?;
+    // Newest first; the todos `create` added on start come before the seed.
+    if todos.iter().map(|t| t.id).collect::<Vec<_>>() != ids
+        || ids.len() != PAGE
+        || !ids.is_sorted_by(|a, b| a > b)
+        || fields != PAGE * 3
+    {
+        return Err(format!("variants disagree: {todos:?}, {ids:?}, {fields} fields").into());
+    }
+
+    let mut group = c.benchmark_group("mongo_list");
+    bench_op(&mut group, rt, "orm", || orm_list(&target.db));
+    let find = &find;
+    bench_op(&mut group, rt, "driver_compiled", || {
+        driver_compiled(&target.todos, find)
+    });
+    bench_op(&mut group, rt, "driver_raw", || {
+        driver_raw(&target.todos, find)
+    });
+    group.finish();
+    Ok(())
+}
+
 /// The title of a todo document.
 fn todo_title(todo: &Document) -> Res<&str> {
     Ok(todo.get_str("title")?)
@@ -480,6 +550,7 @@ fn main() {
 
     let mut c = Criterion::default().configure_from_args();
     ok(bench_get(&mut c, &rt, &server_default));
+    ok(bench_list(&mut c, &rt, &server_default));
     bench_insert(&mut c, &rt, [&server_default, &w1]);
     c.final_summary();
 }
