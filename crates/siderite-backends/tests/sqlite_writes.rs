@@ -1,6 +1,11 @@
 //! Concurrent writers on a pooled SQLite file queue for one write slot.
+//!
+//! The write-queue tests run against the SQLx backend and, with the
+//! `sqlite-native` feature, the native one; group commit is SQLx-only.
 #![cfg(feature = "sqlite")]
 
+#[cfg(feature = "sqlite-native")]
+use siderite_backends::sqlite::native::NativeSqliteBackend;
 use siderite_backends::sqlite::{GroupCommit, SqliteBackend};
 use siderite_orm::{Backend, BackendError, Db, Executor, InsertPlan, OrmError, Value, WritePlan};
 use std::path::PathBuf;
@@ -30,30 +35,93 @@ impl Drop for TempDb {
     }
 }
 
-async fn open(file: &TempDb) -> Result<SqliteBackend, OrmError> {
-    let backend = SqliteBackend::connect(&file.url()).await?;
+/// A SQLite backend with a write queue.
+trait Queued: Backend + Clone + Sized {
+    async fn connect(url: &str) -> Result<Self, BackendError>;
+    fn with_write_timeout(self, wait: Duration) -> Self;
+}
+
+impl Queued for SqliteBackend {
+    async fn connect(url: &str) -> Result<Self, BackendError> {
+        SqliteBackend::connect(url).await
+    }
+
+    fn with_write_timeout(self, wait: Duration) -> Self {
+        SqliteBackend::with_write_timeout(self, wait)
+    }
+}
+
+#[cfg(feature = "sqlite-native")]
+impl Queued for NativeSqliteBackend {
+    async fn connect(url: &str) -> Result<Self, BackendError> {
+        NativeSqliteBackend::connect(url).await
+    }
+
+    fn with_write_timeout(self, wait: Duration) -> Self {
+        NativeSqliteBackend::with_write_timeout(self, wait)
+    }
+}
+
+async fn open<B: Queued>(file: &TempDb) -> Result<B, OrmError> {
+    let backend = B::connect(&file.url()).await?;
     backend
         .execute_script("CREATE TABLE items (id INTEGER PRIMARY KEY, n INTEGER NOT NULL UNIQUE)")
         .await?;
     Ok(backend)
 }
 
-async fn count(backend: &SqliteBackend) -> Result<Option<Value>, OrmError> {
+async fn count(backend: &impl Executor) -> Result<Option<Value>, OrmError> {
     let rows = backend
         .fetch_raw("SELECT COUNT(*) AS n FROM items", Vec::new())
         .await?;
     Ok(rows.rows[0].get("n").cloned())
 }
 
+/// The write-queue tests for backend `$backend`.
+macro_rules! queue_tests {
+    ($backend:ty) => {
+        use super::*;
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn pooled_concurrent_inserts_never_meet_the_busy_handler() -> Result<(), OrmError> {
+            concurrent_inserts::<$backend>().await
+        }
+
+        #[tokio::test]
+        async fn write_outside_an_open_transaction_fails_instead_of_hanging()
+        -> Result<(), OrmError> {
+            write_outside_transaction::<$backend>().await
+        }
+
+        #[tokio::test]
+        async fn rollback_and_drop_release_the_write_slot() -> Result<(), OrmError> {
+            rollback_and_drop::<$backend>().await
+        }
+
+        #[tokio::test]
+        async fn schema_changes_release_the_write_slot() -> Result<(), OrmError> {
+            schema_changes::<$backend>().await
+        }
+    };
+}
+
+mod sqlx_queue {
+    queue_tests!(SqliteBackend);
+}
+
+#[cfg(feature = "sqlite-native")]
+mod native_queue {
+    queue_tests!(NativeSqliteBackend);
+}
+
 /// The most 200 queued inserts may take, slot waits included.
 const TOTAL: Duration = Duration::from_secs(30);
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn pooled_concurrent_inserts_never_meet_the_busy_handler() -> Result<(), OrmError> {
+async fn concurrent_inserts<B: Queued>() -> Result<(), OrmError> {
     let file = TempDb::new();
     // 200 queued durable commits can outlast the default 5 s slot wait on
     // a slow disk; the bound under test is the 30 s total below.
-    let backend = open(&file).await?.with_write_timeout(TOTAL);
+    let backend = open::<B>(&file).await?.with_write_timeout(TOTAL);
     let db = Db::new(backend);
     let started = Instant::now();
     let tasks: Vec<_> = (0..200)
@@ -66,7 +134,10 @@ async fn pooled_concurrent_inserts_never_meet_the_busy_handler() -> Result<(), O
         })
         .collect();
     for task in tasks {
-        assert_eq!(task.await.expect("insert task panicked")?, 1);
+        let inserted = task
+            .await
+            .map_err(|e| BackendError::Database(format!("insert task panicked: {e}")))??;
+        assert_eq!(inserted, 1);
     }
     let rows = db
         .raw_sql("SELECT COUNT(*) AS n FROM items", Vec::new())
@@ -77,20 +148,21 @@ async fn pooled_concurrent_inserts_never_meet_the_busy_handler() -> Result<(), O
     Ok(())
 }
 
-#[tokio::test]
-async fn write_outside_an_open_transaction_fails_instead_of_hanging() -> Result<(), OrmError> {
+async fn write_outside_transaction<B: Queued>() -> Result<(), OrmError> {
     let file = TempDb::new();
-    let backend = open(&file)
+    let backend = open::<B>(&file)
         .await?
         .with_write_timeout(Duration::from_millis(200));
     let tx = backend.begin(None).await?;
     // Reads still use the rest of the pool.
     assert_eq!(count(&backend).await?, Some(Value::Int(0)));
     let started = Instant::now();
-    let err = backend
+    let Err(err) = backend
         .execute_raw("INSERT INTO items (n) VALUES (1)", Vec::new())
         .await
-        .expect_err("the transaction holds the write slot");
+    else {
+        panic!("the transaction holds the write slot");
+    };
     assert!(err.to_string().contains("database is locked"), "{err}");
     assert!(started.elapsed() < Duration::from_secs(2));
     tx.execute_raw("INSERT INTO items (n) VALUES (2)", Vec::new())
@@ -104,10 +176,9 @@ async fn write_outside_an_open_transaction_fails_instead_of_hanging() -> Result<
     Ok(())
 }
 
-#[tokio::test]
-async fn rollback_and_drop_release_the_write_slot() -> Result<(), OrmError> {
+async fn rollback_and_drop<B: Queued>() -> Result<(), OrmError> {
     let file = TempDb::new();
-    let backend = open(&file)
+    let backend = open::<B>(&file)
         .await?
         .with_write_timeout(Duration::from_secs(2));
     let tx = backend.begin(None).await?;
@@ -122,10 +193,9 @@ async fn rollback_and_drop_release_the_write_slot() -> Result<(), OrmError> {
     Ok(())
 }
 
-#[tokio::test]
-async fn schema_changes_release_the_write_slot() -> Result<(), OrmError> {
+async fn schema_changes<B: Queued>() -> Result<(), OrmError> {
     let file = TempDb::new();
-    let backend = open(&file)
+    let backend = open::<B>(&file)
         .await?
         .with_write_timeout(Duration::from_secs(2));
     let schema = backend.begin_schema(true).await?;
@@ -153,10 +223,12 @@ fn insert(n: i64) -> WritePlan {
 }
 
 async fn grouped(file: &TempDb) -> Result<SqliteBackend, OrmError> {
-    Ok(open(file).await?.group_commit(GroupCommit {
-        max_batch: 16,
-        queue: 8,
-    }))
+    Ok(open::<SqliteBackend>(file)
+        .await?
+        .group_commit(GroupCommit {
+            max_batch: 16,
+            queue: 8,
+        }))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -221,7 +293,7 @@ async fn group_commit_runs_a_lone_write_and_leaves_raw_writes_alone() -> Result<
 #[tokio::test]
 async fn group_commit_waits_for_an_open_transaction() -> Result<(), OrmError> {
     let file = TempDb::new();
-    let backend = open(&file)
+    let backend = open::<SqliteBackend>(&file)
         .await?
         .with_write_timeout(Duration::from_millis(200))
         .group_commit(GroupCommit::default());

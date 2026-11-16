@@ -23,6 +23,35 @@
   through the new `Model::from_row_mut` (`take_column`, `Row::take_at`)
   instead of cloning them. Hand-written `Model` impls keep working: the
   new method defaults to `from_row`.
+- **ORM:** multi-row fetches no longer look every column up by name in
+  every row. `QuerySet::all` (and `first`, `get`, `paginate`, `in_bulk`
+  and prefetches) without `select_related` decodes through the new
+  `Executor::fetch_each`: the model's column positions are resolved once
+  per result header (`ColumnPlan`) and each row is decoded with the new
+  `Model::from_cells` (`take_planned`, `Cells`, `RowSink`). The native
+  SQLite backend hands its driver rows over directly when reads run
+  inline, so no `Row` or per-row `Vec<Value>` is built: a 100-row fetch
+  is about 17% faster. Other backends keep `fetch_each`'s default, which
+  passes their `Row`s on. Decode errors name the same column and reason;
+  on the native inline path, a column no model field reads is no longer
+  decoded. Hand-written `Model` impls keep working: `from_cells` defaults
+  to `from_row_mut`.
+- **ORM:** `QuerySet::get` (and the lookups of `get_or_create` /
+  `update_or_create`) drops the default and explicit ordering, as Django
+  does, so a point lookup no longer sends `ORDER BY`. The ordering is kept
+  when it picks the rows: after `limit` / `offset`, or with `distinct_on`.
+- **HTTP:** less per-request framework overhead. Registered state, the DI
+  scope and global dependencies are applied inside each endpoint instead of
+  through one engine router layer each, which boxed and cloned the whole
+  route stack on every request. Server-wide values and the peer address are
+  inserted once per request rather than through extra router levels.
+  Allocations per request drop from 45 to 20 on a static route (axum: 14),
+  routing benches run about 1.5–1.9x faster, and `GET /todos/1` on native
+  SQLite serves about 5–7% more requests per second. Behaviour is
+  unchanged: the first registered state still wins, 405 answers still run
+  global dependencies, mounts still share one request scope. Code that read
+  `Readiness` straight from request extensions (not through the extractor)
+  must use the `Readiness` extractor.
 - **Build:** the workspace release profile uses fat LTO and one codegen
   unit for the benchmark apps, examples and CLI. Unwinding stays enabled,
   so a panicking handler still fails one request, not the server.
@@ -66,6 +95,46 @@
 
 
 ### Added
+- **SQLite:** `sqlite-native` feature (implies `sqlite`) adds
+  `sqlite::native::NativeSqliteBackend`, which calls SQLite in process
+  through rusqlite instead of SQLx's per-connection worker thread. A
+  primary-key `get` drops from about 100 µs to 2–2.3 µs and a 100-row
+  fetch from about 490 µs to 30 µs (`orm/get_by_pk/siderite_native`,
+  `orm/sqlite_native_fetch_100_rows`). Reads run on a set of reader
+  connections, writes queue for one writer connection behind the existing
+  write gate, and `Dispatch` picks per side whether statements run on the
+  calling task (reads, by default) or on Tokio's blocking pool (writes, by
+  default); inline statements block their runtime thread while they run.
+  Binding, decoding, error classification, multi-statement SQL and schema
+  transactions match `SqliteBackend`, and the SQLite suites run against it
+  with `--features sqlite-native`. No group commit yet. The SQLx backend
+  remains the default, and the foreign-key bookkeeping of schema changes
+  and value binding are now shared between the two.
+- **SQLite:** `NativeSqliteOptions::single_process` (off by default) opens
+  the database through SQLite's `unix-excl` VFS: one exclusive lock for the
+  whole process and the WAL index in heap memory, so a read transaction no
+  longer locks the `-shm` file with `fcntl` under a process-wide mutex.
+  Readers still see each commit at once and still run beside an open write
+  transaction; durability is unchanged and a crashed process's committed
+  data is recovered on the next open. The trade-off: no other process (a
+  second server, a CLI migration, a `sqlite3` shell) can use the database
+  while the app has it open; it gets "database is locked" after its busy
+  timeout, and connecting fails that way if another process is already
+  using the file. Unix, read-write file databases only. On the todo
+  benchmark (`SIDERITE_SQLITE_SINGLE_PROCESS=1`) server CPU per
+  `GET /todos/1` drops about 7–8% (24.4 to 22.5 µs), the WAL begin/end
+  path falls from about 15% to 7.5% of samples, and `POST /todos` runs
+  about 5–6% faster.
+- **SQLite:** the native backend is documented next to the SQLx one
+  (backends guide, ORM reference, README): an application opts in by
+  enabling `sqlite-native` on `siderite-backends` and constructing
+  `NativeSqliteBackend`; the SQLx backend stays the default and URLs still
+  select it. `siderite-migrations` gains a test-only `sqlite-native`
+  feature that runs its SQLite tests on the native backend.
+- **Benchmarks:** the todo app runs on the native SQLite backend with
+  `--features sqlite-native` and `SIDERITE_SQLITE_DRIVER=native`
+  (`run_benchmarks.py --sqlite-driver native`), with the same
+  journal/synchronous profiles and `--pool-size` reader connections.
 - **Release:** prebuilt `siderite` archives for Linux (static musl,
   x86-64 and ARM64) and macOS on Intel, next to Apple silicon, each with
   signed build provenance (`gh attestation verify`). Release notes come

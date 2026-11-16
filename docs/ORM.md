@@ -46,7 +46,7 @@ let team = user.fetch_team(&db).await?; // Option<Arc<Team>>
 
 ## Contract (committed before implementation)
 
-* `siderite_orm::Model`: `type Pk`, `META`, `pk`, `set_pk`, `is_unsaved`, `to_values`, `from_row(row, prefix)`, a provided `from_row_mut(&mut row, prefix)` (overridden by the derive to move values out of the row), and a provided `objects(&Db)`.
+* `siderite_orm::Model`: `type Pk`, `META`, `pk`, `set_pk`, `is_unsaved`, `to_values`, `from_row(row, prefix)`, a provided `from_row_mut(&mut row, prefix)` (overridden by the derive to move values out of the row), a provided `from_cells(&mut dyn Cells, &ColumnPlan)` (overridden by the derive to read the column positions resolved once per result; the default forwards to `from_row_mut`), and a provided `objects(&Db)`.
 * `ModelMeta`, `FieldMeta`, `RelationMeta`, `ManyToManyMeta`, `IndexMeta`, `ConstraintMeta`, `OnDelete`, `DbDefault`.
 * `DbType`: maps a Rust type to its `SqlType`, nullability and `Value`. It is implemented for the integer and float families, `bool`, `String`, `Vec<u8>`, `Decimal`, `Uuid`, `NaiveDate`, `NaiveTime`, `DateTime<Utc>`, `TimeDelta`, `IpAddr`, JSON and `Option<T>`. Each type has a canonical text fallback, listed in `types.rs`.
 * `ForeignKey<T>` and `OneToOne<T>`: store the primary key, optionally cache the loaded object, and serialize as the key. Validation and JSON Schema follow `T::Pk`.
@@ -57,6 +57,48 @@ let team = user.fetch_team(&db).await?; // Option<Arc<Team>>
 * `crates/siderite-backends/tests/reference_model.rs` contains hand-written `Author`/`Book` implementations. This is exactly the shape the derive must generate.
 
 ## Transactions
+
+### Native SQLite
+
+Enable `sqlite-native` on `siderite-backends` (it implies `sqlite`) to opt
+into `sqlite::native::{NativeSqliteBackend, NativeSqliteOptions}`. The SQLx
+`SqliteBackend` remains the default; an application switches by
+constructing the native backend, not by URL. It accepts the same URLs and
+behaves the same for binding, decoding, errors, multi-statement SQL and
+schema transactions, and the backend and migration SQLite suites run on it
+with `--features sqlite-native`.
+
+```rust
+use siderite_backends::sqlite::native::{
+    JournalMode, NativeSqliteBackend, NativeSqliteOptions,
+};
+use siderite_orm::Db;
+
+let backend = NativeSqliteBackend::connect_with(
+    "sqlite://app.db?mode=rwc",
+    NativeSqliteOptions {
+        journal_mode: Some(JournalMode::Wal),
+        ..NativeSqliteOptions::default()
+    },
+)
+.await?;
+let db = Db::new(backend);
+```
+
+Reads run inline on `readers` connections (default 10); writes,
+transactions and schema changes queue for one writer connection behind the
+write gate and run on Tokio's blocking pool. `Dispatch` changes either
+side. Group commit is not available on the native backend yet.
+
+`single_process: true` opens the file through SQLite's `unix-excl` VFS:
+the process takes one exclusive lock on the database and keeps the WAL
+index in memory, so a read no longer makes `fcntl` locking calls. The
+backend's own connections behave as before, and durability is unchanged.
+The price is that **no other process can use the database while the app
+has it open** (a second server, a CLI migration, a `sqlite3` shell): it
+fails with "database is locked" after its busy timeout, and connecting
+fails the same way if another process already has the file open. Off by
+default; Unix and read-write file databases only.
 
 ### Experimental native MySQL
 
