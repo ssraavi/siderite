@@ -18,8 +18,13 @@
 //!   pipeline the ORM compiled before reads became `find`s
 //!   (`[{$match: {_id: {$eq: 1}}}, {$limit: 2}]`); `driver_find_one` is
 //!   `find_one({_id: 1})`; `opmsg_find` is a `find` with `limit: 1` and
-//!   `singleBatch` on one raw connection; `compile` builds the queryset and
-//!   compiles it, without I/O.
+//!   `singleBatch` on one raw connection; `opmsg_find_orm_shape` replays on
+//!   it the ORM's `find` as the driver sent it but without `lsid` and
+//!   `$clusterTime`, and `opmsg_find_as_driver` replays it with both (on a
+//!   fresh session id), so the gap between the two is the server's cost of
+//!   the implicit session and cluster-time gossip and the gap from
+//!   `opmsg_find_as_driver` to `driver_compiled` is the driver's own;
+//!   `compile` builds the queryset and compiles it, without I/O.
 //! * `mongo_list`: `orm` is `Todo::objects(&db).limit(20).all()`, the
 //!   first page `GET /todos` reads (newest first); `driver_compiled` runs
 //!   the `find` the ORM compiles and collects every document as a
@@ -42,7 +47,7 @@ mod opmsg;
 
 use criterion::measurement::WallTime;
 use criterion::{BenchmarkGroup, Criterion};
-use mongodb::bson::{Bson, Document, doc};
+use mongodb::bson::{Bson, Document, RawDocument, Uuid, doc};
 use mongodb::event::EventHandler;
 use mongodb::event::command::CommandEvent;
 use mongodb::options::{ClientOptions, ReturnDocument};
@@ -208,22 +213,26 @@ async fn observe_orm(url: &str) -> Res<(Db, Vec<Document>)> {
 
 /// Print what the ORM sends on `url` (without session and cluster-time
 /// fields) and check the read is the `find` [`compile_get`] builds, so
-/// `driver_compiled` and `compile` time the same query.
-async fn report_orm_commands(label: &str, url: &str) -> Res<()> {
+/// `driver_compiled` and `compile` time the same query. Returns that
+/// `find` exactly as the driver sent it, session and cluster time included.
+async fn report_orm_commands(label: &str, url: &str) -> Res<Document> {
     let (db, commands) = observe_orm(url).await?;
     let mut sent = None;
-    for mut command in commands {
-        command.remove("lsid");
-        command.remove("$clusterTime");
-        println!("ORM command ({label}): {command}");
-        if command.contains_key("aggregate") {
-            return Err(format!("the ORM read is not a find: {command}").into());
+    let mut as_sent = None;
+    for command in commands {
+        let mut shown = command.clone();
+        shown.remove("lsid");
+        shown.remove("$clusterTime");
+        println!("ORM command ({label}): {shown}");
+        if shown.contains_key("aggregate") {
+            return Err(format!("the ORM read is not a find: {shown}").into());
         }
-        if command.contains_key("find") {
-            sent = Some(command);
+        if shown.contains_key("find") {
+            sent = Some(shown);
+            as_sent = Some(command);
         }
     }
-    let sent = sent.ok_or("the ORM sent no find")?;
+    let (sent, as_sent) = sent.zip(as_sent).ok_or("the ORM sent no find")?;
     let ours = compiled_find(&compile_get(&db, &Keys::default(), LOOKUP_ID)?)?;
     let options = ours.options();
     let int = |key: &str| match sent.get(key) {
@@ -241,7 +250,7 @@ async fn report_orm_commands(label: &str, url: &str) -> Res<()> {
     if !matches {
         return Err(format!("ORM sent {sent}, bench compiles {ours:?}").into());
     }
-    Ok(())
+    Ok(as_sent)
 }
 
 /// The `find` of a compiled read.
@@ -324,14 +333,39 @@ async fn opmsg_find(wire: &opmsg::Conn) -> Res<()> {
         "singleBatch": true,
         "$db": DATABASE,
     };
-    wire.run(&command, |reply| {
-        let batch = reply.get_document("cursor")?.get_array("firstBatch")?;
-        match batch.get_document(0)?.get_i64("_id")? {
-            LOOKUP_ID => Ok(()),
-            _ => Err("find returned another todo".into()),
-        }
-    })
-    .await
+    wire.run(&command, check_first_todo).await
+}
+
+/// Pass when the first batch of a `find` reply starts with the todo
+/// [`LOOKUP_ID`].
+fn check_first_todo(reply: &RawDocument) -> Res<()> {
+    let batch = reply.get_document("cursor")?.get_array("firstBatch")?;
+    match batch.get_document(0)?.get_i64("_id")? {
+        LOOKUP_ID => Ok(()),
+        _ => Err("find returned another todo".into()),
+    }
+}
+
+/// The ORM's `find` as the driver sent it, on a fresh session id when
+/// `session` is true and without `lsid` and `$clusterTime` when it is
+/// false: the commands of the `opmsg_find_as_driver` and
+/// `opmsg_find_orm_shape` variants.
+fn replayed_find(as_sent: &Document, session: bool) -> Document {
+    let mut command = as_sent.clone();
+    if session {
+        command.insert("lsid", doc! { "id": Uuid::new() });
+    } else {
+        command.remove("lsid");
+        command.remove("$clusterTime");
+    }
+    command
+}
+
+/// Variants `opmsg_find_orm_shape` and `opmsg_find_as_driver`: send a copy
+/// of `command` (from [`replayed_find`]), as a client builds each command
+/// anew.
+async fn opmsg_replay(wire: &opmsg::Conn, command: &Document) -> Res<()> {
+    wire.run(&command.clone(), check_first_todo).await
 }
 
 /// The read `GET /todos` sends: the first page in the model's ordering.
@@ -434,7 +468,7 @@ where
 
 /// Group `mongo_get_pk` on `target`, after checking every variant finds
 /// the seeded todo.
-fn bench_get(c: &mut Criterion, rt: &Runtime, target: &Target) -> Res<()> {
+fn bench_get(c: &mut Criterion, rt: &Runtime, target: &Target, as_sent: &Document) -> Res<()> {
     let keys = Keys::default();
     let find = compiled_find(&compile_get(&target.db, &keys, LOOKUP_ID)?)?;
     let pipeline = former_pipeline();
@@ -443,6 +477,10 @@ fn bench_get(c: &mut Criterion, rt: &Runtime, target: &Target) -> Res<()> {
     let aggregated = rt.block_on(driver_aggregate(&target.todos, &pipeline))?;
     let found = rt.block_on(driver_find_one(&target.todos))?;
     rt.block_on(opmsg_find(&target.wire))?;
+    let orm_shape = replayed_find(as_sent, false);
+    let as_driver = replayed_find(as_sent, true);
+    rt.block_on(opmsg_replay(&target.wire, &orm_shape))?;
+    rt.block_on(opmsg_replay(&target.wire, &as_driver))?;
     let expected = todo_title(&found)?;
     if compiled != [found.clone()]
         || aggregated != compiled
@@ -465,6 +503,13 @@ fn bench_get(c: &mut Criterion, rt: &Runtime, target: &Target) -> Res<()> {
         driver_find_one(&target.todos)
     });
     bench_op(&mut group, rt, "opmsg_find", || opmsg_find(&target.wire));
+    let (orm_shape, as_driver) = (&orm_shape, &as_driver);
+    bench_op(&mut group, rt, "opmsg_find_orm_shape", || {
+        opmsg_replay(&target.wire, orm_shape)
+    });
+    bench_op(&mut group, rt, "opmsg_find_as_driver", || {
+        opmsg_replay(&target.wire, as_driver)
+    });
     group.bench_function("compile", |b| {
         b.iter(|| ok(compile_get(&target.db, &keys, black_box(LOOKUP_ID))));
     });
@@ -545,11 +590,11 @@ fn main() {
     let server_default = ok(rt.block_on(Target::open("w_default", &url, None, 1)));
     let w1 = ok(rt.block_on(Target::open("w1", &w1_url, Some(doc! { "w": 1_i32 }), 2)));
     ok(rt.block_on(seed(&server_default)));
-    ok(rt.block_on(report_orm_commands("w_default", &url)));
+    let as_sent = ok(rt.block_on(report_orm_commands("w_default", &url)));
     ok(rt.block_on(report_orm_commands("w1", &w1_url)));
 
     let mut c = Criterion::default().configure_from_args();
-    ok(bench_get(&mut c, &rt, &server_default));
+    ok(bench_get(&mut c, &rt, &server_default, &as_sent));
     ok(bench_list(&mut c, &rt, &server_default));
     bench_insert(&mut c, &rt, [&server_default, &w1]);
     c.final_summary();
