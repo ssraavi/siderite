@@ -19,16 +19,18 @@ bench = false
 [dev-dependencies]
 axum.workspace = true
 siderite-web.workspace = true
-siderite-backends = { workspace = true, features = ["sqlite", "sqlite-native", "postgres"] }
+siderite-backends = { workspace = true, features = ["sqlite", "sqlite-native", "postgres", "mongodb"] }
 criterion = { workspace = true, features = ["async_tokio", "plotters", "html_reports"] }
 # 0.32 shares libsqlite3-sys 0.30 with sqlx; "bundled" matches what sqlx's
 # `sqlite` feature already turns on, so there is one SQLite build.
 rusqlite = { version = "0.32", features = ["bundled"] }
 http.workspace = true
+mongodb.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sqlx = { workspace = true, features = ["sqlite"] }
-tokio.workspace = true
+# `io-util` and `sync` for the raw OP_MSG connection in the mongo bench.
+tokio = { workspace = true, features = ["io-util", "sync"] }
 tower.workspace = true
 
 [[bench]]
@@ -45,4 +47,8 @@ harness = false
 
 [[bench]]
 name = "cache"
+harness = false
+
+[[bench]]
+name = "mongo"
 harness = false

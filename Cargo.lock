@@ -3502,6 +3502,7 @@ dependencies = [
  "axum",
  "criterion",
  "http",
+ "mongodb",
  "rusqlite",
  "serde",
  "serde_json",
