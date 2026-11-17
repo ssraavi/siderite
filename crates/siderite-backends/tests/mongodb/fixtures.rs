@@ -20,9 +20,8 @@ impl TestDb {
             panic!("live mongodb tests require MONGODB_URL");
         };
         let name = format!("siderite_test_{}", Uuid::new_v4().simple());
-        let backend = MongoBackend::connect(&url, &name)
+        let backend = connect(&url, &name)
             .await
-            .unwrap()
             .with_keys(Keys::default().with("tags", "slug"));
         Some(Self {
             db: Db::new(backend.clone()),
@@ -61,6 +60,35 @@ impl TestDb {
     pub async fn cleanup(self) {
         self.backend.database().drop().await.unwrap();
     }
+}
+
+/// `SIDERITE_MONGO_NATIVE=1` runs the suite with the native read path
+/// forced on (feature `mongodb-native`).
+pub fn native() -> bool {
+    std::env::var("SIDERITE_MONGO_NATIVE").is_ok_and(|v| v == "1")
+}
+
+/// The backend under test: native when [`native`] asks for it (failing
+/// loudly when the deployment does not qualify), the driver otherwise.
+pub async fn connect(url: &str, name: &str) -> MongoBackend {
+    if native() {
+        #[cfg(feature = "mongodb-native")]
+        {
+            use siderite_backends::mongodb::DataPath;
+            let connect = MongoBackend::connect_native(url, name);
+            let backend = connect.await.unwrap();
+            assert_eq!(
+                backend.data_path(),
+                DataPath::Native,
+                "native path requested but ineligible: {:?}",
+                backend.native_ineligibility()
+            );
+            return backend;
+        }
+        #[cfg(not(feature = "mongodb-native"))]
+        panic!("SIDERITE_MONGO_NATIVE=1 needs the mongodb-native feature");
+    }
+    MongoBackend::connect(url, name).await.unwrap()
 }
 
 pub fn is_capability(result: &Result<impl std::fmt::Debug, OrmError>, wanted: Feature) -> bool {

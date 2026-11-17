@@ -395,3 +395,65 @@ class SQLiteDriverTests(unittest.TestCase):
                     sqlite_driver=driver,
                 )
         return captured["env"], list(results)
+
+
+class MongoDriverTests(unittest.TestCase):
+    """The Siderite MongoDB data path is explicit and separately labelled."""
+
+    def test_driver_is_the_default_and_native_is_selectable(self):
+        self.assertEqual(runner.mongo_driver_env("driver"),
+                         {"SIDERITE_MONGO_DRIVER": "driver"})
+        self.assertEqual(runner.mongo_driver_env("native"),
+                         {"SIDERITE_MONGO_DRIVER": "native"})
+        with self.assertRaises(ValueError):
+            runner.mongo_driver_env("opmsg")
+
+    def test_suite_passes_driver_and_labels_native_runs(self):
+        for driver, label in (
+            ("driver", "mongodb: get one"),
+            ("native", "mongodb-siderite-native: get one"),
+        ):
+            env, labels = self.run_suite(driver)
+            self.assertEqual(env["SIDERITE_MONGO_DRIVER"], driver)
+            self.assertIn("maxPoolSize=4", env["DATABASE_URL"])
+            self.assertIn(label, labels)
+
+    def test_cli_rejects_native_outside_a_mongodb_suite(self):
+        for argv in (
+            ["--suite", "db", "--db", "mysql", "--mongo-driver", "native"],
+            ["--suite", "plain", "--mongo-driver", "native"],
+        ):
+            with patch("sys.argv", ["run_benchmarks.py", *argv]):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit) as raised:
+                        runner.main()
+            self.assertEqual(raised.exception.code, 2)
+
+    def run_suite(self, driver):
+        """Run the MongoDB read profile with servers and load stubbed out.
+
+        Args:
+            driver: Siderite MongoDB data path passed to the suite.
+
+        Returns:
+            The Siderite environment and the reported result labels.
+        """
+        captured = {}
+
+        def specs(*args):
+            captured["env"] = args[5]
+            return {label: Mock() for label in ("Siderite", "FastAPI")}
+
+        with (
+            patch.object(runner, "seed_database"),
+            patch.object(runner, "server_specs", side_effect=specs),
+            patch.object(runner, "run_benchmark_set",
+                         return_value=({}, {})),
+            patch.object(runner, "asdict", side_effect=dict),
+        ):
+            results = runner.run_todo_suite(
+                "mongodb", 1, 2, pool_size=4, todo_operation="reads",
+                db_url="mongodb://127.0.0.1:27017/siderite",
+                mongo_driver=driver,
+            )
+        return captured["env"], list(results)

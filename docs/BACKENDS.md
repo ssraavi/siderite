@@ -103,6 +103,16 @@ Two details matter in practice:
 * No foreign keys or cascades; only `_id` is unique, plus indexes made with `MongoBackend::create_unique_index`. Duplicate-key and validation failures map to `BackendError::Constraint`.
 * `Update`/`Delete` with `RETURNING` pin the matching ids first; outside a transaction a concurrent writer can interleave.
 
+### Native MongoDB read path
+
+Feature `mongodb-native` (off by default) adds `MongoBackend::connect_native(url, database)` (and `connect_native_with(url, database, NativeOptions)`). Reads outside transactions (`find` and `aggregate`, with `getMore` / `killCursors`) then go out as `OP_MSG` on a pool of the backend's own; the driver client is still connected and runs every write, transaction, `raw_command` and index creation.
+
+* Eligibility is decided once, at connect: a plain `mongodb://` URL without TLS, credentials, `loadBalanced` or a non-primary read preference, and a writable primary (MongoDB 5.0+, `maxWireVersion` >= 13, of the URL's `replicaSet` if named) found with `hello` from the seed list. Otherwise the backend silently uses the driver; `data_path()` returns `DataPath::Native` or `DataPath::Driver`, and `native_ineligibility()` says why. SRV, TLS and authentication are follow-ups.
+* The pool holds `maxPoolSize` connections (default 10) besides the driver's, opened on demand with `connectTimeoutMS`; a read waits at most `waitQueueTimeoutMS` (default 30 s) for one, then fails with `BackendError::Connection`. Checkout needs no cross-task hop. A read cancelled while its reply is due hands the connection to a task that finishes reading it (and kills a cursor it opened); one cancelled mid-write closes it.
+* Commands carry no `lsid` / `$clusterTime` (a read outside a session needs neither; causal consistency is not offered outside sessions on either path). Rows decode through the same raw-BSON decoder as the driver path.
+* `ok: 0` maps to the same `BackendError` as on the driver path. Network errors and "not primary" / shutdown / interrupted replies retire the server's connections, send the pool looking for the primary again, and retry the read once through the driver (only when no row was delivered yet).
+* Test it with `SIDERITE_MONGO_NATIVE=1 MONGODB_URL=... cargo test -p siderite-backends --features mongodb-native --test mongodb -- --include-ignored --test-threads 1`: the whole live suite runs on the native path (and fails if the deployment does not qualify); `tests/mongodb/native.rs` and the failover test (`MONGODB_FAILOVER_URL`, a three-member replica set) cover what is specific to it.
+
 ## Redis notes
 
 `RedisStore` (feature `redis`) wraps a `ConnectionManager` with an optional key prefix: keys (`get`, `set` with TTL, `set_nx`, `del`, `exists`, `expire`, `ttl`, `incr_by`), hashes, sets, `get_json`/`set_json`, and atomic `MULTI`/`EXEC` pipelines. It does not implement the QuerySet traits; `BackendCapabilities::redis()` rejects every relational feature.

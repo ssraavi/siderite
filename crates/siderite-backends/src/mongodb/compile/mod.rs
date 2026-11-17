@@ -151,14 +151,21 @@ impl FindQuery {
         let mut options = FindOptions::default();
         options.skip = self.skip;
         options.limit = self.limit;
-        // The driver sends `limit + 1` when the two are equal (so the
-        // server closes the cursor), which must still fit an `i32`.
-        options.batch_size = self
-            .limit
+        options.batch_size = self.batch_size();
+        options
+    }
+
+    /// The batch size the driver is given: the limit when it is larger
+    /// than [`FIRST_BATCH`](Self::FIRST_BATCH), otherwise none.
+    ///
+    /// The driver sends `limit + 1` when the two are equal (so the server
+    /// closes the cursor), which must still fit an `i32`.
+    #[must_use]
+    pub fn batch_size(&self) -> Option<u32> {
+        self.limit
             .filter(|n| *n > Self::FIRST_BATCH)
             .and_then(|n| u32::try_from(n).ok())
-            .filter(|n| *n < i32::MAX.unsigned_abs());
-        options
+            .filter(|n| *n < i32::MAX.unsigned_abs())
     }
 
     /// Documents in the server's first reply to a `find` without a batch

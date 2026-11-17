@@ -176,6 +176,75 @@
 //! `raw_sql`, `raw_execute` and `execute_script` are capability errors
 //! (`Feature::RawSql`); [`MongoBackend::raw_command`] runs a database
 //! command instead.
+//!
+//! # Native data path
+//!
+//! With the `mongodb-native` feature (off by default),
+//! `MongoBackend::connect_native` (or `connect_native_with` and
+//! `NativeOptions`) also opens a pool of the backend's own `OP_MSG`
+//! connections and sends reads outside transactions there, skipping the
+//! driver's per-operation server selection, implicit session checkout and
+//! hand-off to its pool worker. The driver `Client` stays the source of
+//! truth: it is connected as by `connect` and runs every write,
+//! transaction, admin command (`raw_command`) and index creation.
+//!
+//! **Eligibility** is decided once, at connect: a plain `mongodb://` URL
+//! (not `mongodb+srv://`) without TLS, credentials, `loadBalanced` or a
+//! declared server API, with the primary read preference (the default),
+//! and a writable primary reachable from the seed list. The primary is
+//! found with `hello` on native connections (following each member's
+//! `primary` and `hosts`, except with `directConnection=true`, which allows
+//! only the seed itself); it must report `maxWireVersion` 13 or later
+//! (MongoDB 5.0) and, when the URL names a `replicaSet`, that `setName`. A
+//! standalone server or `mongos` that reports itself writable qualifies
+//! when the URL names no replica set. Otherwise the backend silently uses
+//! the driver for everything; `MongoBackend::data_path` says which path is
+//! active and `MongoBackend::native_ineligibility` why native was not.
+//! SRV, TLS and authentication are planned follow-ups.
+//!
+//! **Supported operations**: `Read::Find` and `Read::Pipeline` (the
+//! `find` / `aggregate` commands of [`compile::Read`]) run by `fetch`,
+//! `fetch_each` and the reads inside `update` / `delete` with `RETURNING`,
+//! whenever no transaction (session) is involved; transactions always use
+//! the driver. Commands are written straight into a reused buffer (the
+//! compiled filter, sort, projection and stages serialized in place) with
+//! the fields the driver sends (`limit`, `skip`, `batchSize` as the driver
+//! computes it, the URL's `readConcern`, `$db`), but without `lsid` and
+//! `$clusterTime`: a read outside a session needs no session id (the
+//! server opens no session for it, and the cursor is killed or exhausted
+//! by this backend), and causal consistency is not offered outside
+//! sessions on either path. When the first batch leaves a cursor open,
+//! `getMore` runs on the same connection until it is exhausted; a read
+//! that stops early (the row sink fails) sends `killCursors`. Replies are
+//! decoded by the same raw-BSON decoder as the driver path, so rows are
+//! identical.
+//!
+//! **Pool**: `maxPoolSize` connections (default 10, like the driver; in
+//! addition to the driver's own pool), opened on demand with
+//! `connectTimeoutMS` and kept with `TCP_NODELAY`. A checkout takes a
+//! semaphore permit and pops an idle connection in the calling task (no
+//! channel hop); it waits at most `waitQueueTimeoutMS` (default 30 s) and
+//! then fails with `BackendError::Connection`. Each connection reuses its
+//! request and reply buffers. Cancellation is safe: a read whose future is
+//! dropped mid-write closes its connection, and one dropped while its reply
+//! is due hands the connection to a task that reads the reply to the end,
+//! kills any cursor it opened and only then returns the connection.
+//!
+//! **Errors and fallback**: an `ok: 0` reply is classified exactly as the
+//! driver path classifies the same server error (duplicate keys and
+//! validation are `Constraint`, the rest `Database`). A network error, or
+//! a "not primary" / shutdown / interrupted reply (codes 10107, 13435,
+//! 13436, 189, 91, 11600, 11602 and the host / network codes 6, 7, 89,
+//! 9001), closes the connection, retires every connection to that server
+//! and makes the next checkout look for the primary again; the read is
+//! then retried once through the driver, which selects the new primary
+//! itself (only if no row was delivered yet; reads are idempotent, and no
+//! write runs natively). While no primary is known, reads use the driver.
+//!
+//! **Limitations**: no SRV, TLS, authentication, compression or server API
+//! versioning; reads only; no idle-connection reaping (`maxIdleTimeMS`), no
+//! background monitoring (a primary change is noticed through errors); the
+//! two pools together may hold up to twice `maxPoolSize` connections.
 
 pub mod compile;
 #[cfg(test)]
@@ -183,7 +252,11 @@ mod compile_tests;
 mod decode;
 mod exec;
 mod keys;
+#[cfg(feature = "mongodb-native")]
+mod native;
 pub mod value;
 
 pub use compile::Keys;
 pub use exec::MongoBackend;
+#[cfg(feature = "mongodb-native")]
+pub use native::{DataPath, NativeOptions};

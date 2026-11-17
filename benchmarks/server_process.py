@@ -136,7 +136,7 @@ DATABASE_SETTING_KEYS = frozenset({
     "read_preference", "client_read_concern", "client_write_concern",
     "server_default_read_concern", "server_default_write_concern",
     "majority_journal_default", "max_pool_size", "min_pool_size",
-    "max_connecting", "retry_reads", "retry_writes",
+    "max_connecting", "retry_reads", "retry_writes", "data_path",
 })
 
 

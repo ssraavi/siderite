@@ -55,6 +55,20 @@ class PairedTests(unittest.TestCase):
         })
         self.assertFalse(compare_pairs(left, right)["lead_gate_passed"])
 
+    def test_mongodb_data_path_is_recorded_but_not_compared(self):
+        settings = {"version": "8.0.15", "client_write_concern": "{}"}
+        left = [replace(trial(200, index), database_backend="mongodb",
+                        database_settings={**settings,
+                                           "data_path": "native"})
+                for index in range(5)]
+        right = [replace(trial(100, index), database_backend="mongodb",
+                         database_settings=settings) for index in range(5)]
+        self.assertTrue(compare_pairs(left, right)["lead_gate_passed"])
+        right[0] = replace(right[0], database_settings={
+            "data_path": "native",
+        })
+        self.assertFalse(compare_pairs(left, right)["lead_gate_passed"])
+
     def test_pair_ratios_preserve_shared_drift(self):
         baselines = [10, 1000, 10, 1000, 10]
         ratios = [1, 1, 100, 1, 100]

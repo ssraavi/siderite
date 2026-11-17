@@ -24,12 +24,16 @@
 //!   fresh session id), so the gap between the two is the server's cost of
 //!   the implicit session and cluster-time gossip and the gap from
 //!   `opmsg_find_as_driver` to `driver_compiled` is the driver's own;
-//!   `compile` builds the queryset and compiles it, without I/O.
+//!   `compile` builds the queryset and compiles it, without I/O;
+//!   `orm_native` is `orm` on a backend opened with
+//!   `MongoBackend::connect_native` (the native `OP_MSG` read path; skipped
+//!   with a note when the deployment does not qualify).
 //! * `mongo_list`: `orm` is `Todo::objects(&db).limit(20).all()`, the
 //!   first page `GET /todos` reads (newest first); `driver_compiled` runs
 //!   the `find` the ORM compiles and collects every document as a
 //!   `Document`; `driver_raw` runs the same `find` and only walks each
-//!   reply document's raw BSON, the floor for decoding through the driver.
+//!   reply document's raw BSON, the floor for decoding through the driver;
+//!   `orm_native` is `orm` on the native read path.
 //! * `mongo_insert`: `orm` is `create` (keys come from blocks of 64 reserved
 //!   with one counter update, so most inserts are one round trip);
 //!   `driver_counter_insert` reserves each key from the counter
@@ -55,7 +59,7 @@ use mongodb::{Client, Collection, Cursor};
 use siderite::orm::Db;
 use siderite::prelude::*;
 use siderite_backends::mongodb::compile::{CompiledQuery, FindQuery, Read, compile_query};
-use siderite_backends::mongodb::{Keys, MongoBackend};
+use siderite_backends::mongodb::{DataPath, Keys, MongoBackend};
 use std::fmt::Display;
 use std::hint::black_box;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -124,6 +128,8 @@ struct Target {
     label: &'static str,
     /// The ORM handle.
     db: Db,
+    /// The ORM on the native read path, when the deployment qualifies.
+    native: Option<Db>,
     /// The todo collection through the driver.
     todos: Collection<Document>,
     /// The ORM's key counters through the driver.
@@ -150,9 +156,20 @@ impl Target {
         let wire = opmsg::Conn::connect(&addr.to_string()).await?;
         let client = Client::with_options(options)?;
         let database = client.database(DATABASE);
+        let native = MongoBackend::connect_native(url, DATABASE).await?;
+        let native = if native.data_path() == DataPath::Native {
+            Some(Db::new(native))
+        } else {
+            println!(
+                "{label}: orm_native skipped, native path ineligible: {}",
+                native.native_ineligibility().unwrap_or_default()
+            );
+            None
+        };
         Ok(Self {
             label,
             db: Db::new(MongoBackend::from_client(client, DATABASE)),
+            native,
             todos: database.collection(TODOS),
             counters: database.collection(COUNTERS),
             wire,
@@ -489,9 +506,20 @@ fn bench_get(c: &mut Criterion, rt: &Runtime, target: &Target, as_sent: &Documen
     {
         return Err(format!("variants disagree: {todo:?}, {compiled:?}, {found}").into());
     }
+    if let Some(native) = &target.native {
+        let natively = rt.block_on(orm_get(native))?;
+        let same = |t: &Todo| (t.id, t.title.clone(), t.done);
+        if same(&natively) != same(&todo) {
+            let why = format!("native read disagrees: {natively:?}, {todo:?}");
+            return Err(why.into());
+        }
+    }
 
     let mut group = c.benchmark_group("mongo_get_pk");
     bench_op(&mut group, rt, "orm", || orm_get(&target.db));
+    if let Some(native) = &target.native {
+        bench_op(&mut group, rt, "orm_native", || orm_get(native));
+    }
     let (find, pipeline) = (&find, &pipeline);
     bench_op(&mut group, rt, "driver_compiled", || {
         driver_compiled(&target.todos, find)
@@ -539,9 +567,19 @@ fn bench_list(c: &mut Criterion, rt: &Runtime, target: &Target) -> Res<()> {
     {
         return Err(format!("variants disagree: {todos:?}, {ids:?}, {fields} fields").into());
     }
+    if let Some(native) = &target.native {
+        let natively = rt.block_on(orm_list(native))?;
+        if natively.iter().map(|t| t.id).collect::<Vec<_>>() != ids {
+            let why = format!("native page disagrees: {natively:?}, {ids:?}");
+            return Err(why.into());
+        }
+    }
 
     let mut group = c.benchmark_group("mongo_list");
     bench_op(&mut group, rt, "orm", || orm_list(&target.db));
+    if let Some(native) = &target.native {
+        bench_op(&mut group, rt, "orm_native", || orm_list(native));
+    }
     let find = &find;
     bench_op(&mut group, rt, "driver_compiled", || {
         driver_compiled(&target.todos, find)

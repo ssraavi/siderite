@@ -6,6 +6,26 @@ import statistics
 
 from benchmark_metrics import BenchmarkError, require_valid
 
+# Recorded settings that describe one application's client rather than
+# the database; they may differ between the paired applications.
+CLIENT_ONLY_SETTINGS = frozenset({"data_path"})
+
+
+def server_settings(settings):
+    """Drop client-only keys from recorded database settings.
+
+    Args:
+        settings: One trial's recorded settings, or None.
+
+    Returns:
+        The settings both applications must share, or the input unchanged
+        when it is not a dict.
+    """
+    if not isinstance(settings, dict):
+        return settings
+    return {key: value for key, value in settings.items()
+            if key not in CLIENT_ONLY_SETTINGS}
+
 
 def compare_pairs(left, right, *, samples=10000, seed=0, lead=1.10):
     """Resample complete trial pairs, preserving shared run-level variation.
@@ -62,7 +82,8 @@ def compare_pairs(left, right, *, samples=10000, seed=0, lead=1.10):
                 first.database_backend == second.database_backend
                 and isinstance(first.database_settings, dict)
                 and bool(first.database_settings)
-                and first.database_settings == second.database_settings
+                and server_settings(first.database_settings)
+                == server_settings(second.database_settings)
             )
         tails = (first.p99_ms, second.p99_ms)
         if any(value is None or not math.isfinite(value) or value < 0

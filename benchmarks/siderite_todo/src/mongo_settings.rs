@@ -64,6 +64,18 @@ pub async fn capture(db: &Database, options: &ClientOptions) -> Result<Value> {
     }))
 }
 
+/// Record which path the adapter's reads take.
+///
+/// It describes Siderite's client, not the server, so the runner keeps it
+/// out of the settings both applications must share.
+///
+/// Args:
+///     settings: Settings from [`capture`].
+///     data_path: `driver` or `native`.
+pub fn record_data_path(settings: &mut Value, data_path: &str) {
+    settings["data_path"] = data_path.into();
+}
+
 fn canonical<T: Serialize>(value: Option<T>) -> Result<String> {
     let value = match value {
         Some(value) => serde_json::to_value(value).map_err(Error::internal)?,

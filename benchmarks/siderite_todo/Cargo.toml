@@ -18,3 +18,4 @@ mongodb.workspace = true
 [features]
 mysql-native = ["siderite-backends/mysql-native"]
 sqlite-native = ["siderite-backends/sqlite-native"]
+mongodb-native = ["siderite-backends/mongodb-native"]

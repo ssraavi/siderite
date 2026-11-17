@@ -87,6 +87,7 @@ jobs:
           - mysql
           - mysql-native
           - mongodb
+          - mongodb-native
           - redis
           - tls
           - postgres,tls

@@ -484,6 +484,7 @@ def run_todo_suite(
     fastapi_sqlite_mode: str = "pooled",
     siderite_group_commit: bool = False,
     sqlite_driver: str = "sqlx",
+    mongo_driver: str = "driver",
 ) -> Dict[str, Dict[str, Any]]:
     profile_name = sqlite_profile or (
         "wal-normal" if sqlite_wal else "default"
@@ -520,6 +521,7 @@ def run_todo_suite(
         env["SIDERITE_MYSQL_DRIVER"] = mysql_driver
     elif backend == "mongodb":
         env["MONGODB_URL"] = db_url
+        env.update(mongo_driver_env(mongo_driver))
     elif backend == "sqlite":
         env["SQLITE_PATH"] = str(database_file)
         env["FASTAPI_SQLITE_MODE"] = fastapi_sqlite_mode
@@ -545,6 +547,8 @@ def run_todo_suite(
             profile += "-siderite-group-commit"
         if sqlite_driver == "native":
             profile += "-siderite-native"
+    if backend == "mongodb" and mongo_driver == "native":
+        profile += "-siderite-native"
     results = {}
     for path, method, name in (
         ("/todos", "GET", "list 20"),
@@ -667,6 +671,29 @@ def sqlite_driver_env(driver: str, group_commit: bool) -> Dict[str, str]:
     }
 
 
+def mongo_driver_env(driver: str) -> Dict[str, str]:
+    """Return the Siderite MongoDB data-path setting for the app.
+
+    ``driver`` (the default) sends everything through the ``mongodb``
+    crate. ``native`` sends reads outside transactions on Siderite's own
+    OP_MSG pool; it needs a release binary built with the
+    ``mongodb-native`` feature, and the app exits when the deployment does
+    not qualify (TLS, credentials, SRV, a non-primary read preference).
+
+    Args:
+        driver: Siderite MongoDB data path, ``driver`` or ``native``.
+
+    Returns:
+        Environment variables selecting the data path.
+
+    Raises:
+        ValueError: Unknown data path.
+    """
+    if driver not in ("driver", "native"):
+        raise ValueError("Invalid Siderite MongoDB driver")
+    return {"SIDERITE_MONGO_DRIVER": driver}
+
+
 def print_markdown_summary(
     plain_results: Dict[str, Any], todo_results: Dict[str, Any]
 ):
@@ -750,6 +777,13 @@ def main():
         choices=["sqlx", "native"],
         default="sqlx",
         help="Siderite MySQL driver; native requires its release feature",
+    )
+    parser.add_argument(
+        "--mongo-driver",
+        choices=["driver", "native"],
+        default="driver",
+        help="Siderite MongoDB data path; native requires its release "
+             "feature",
     )
     parser.add_argument(
         "--sqlite-driver",
@@ -875,6 +909,11 @@ def main():
         args.suite == "plain" or args.db not in ("sqlite", "all")
     ):
         parser.error("native SQLite requires a DB suite containing SQLite")
+    if args.mongo_driver == "native" and (
+        args.suite == "plain" or args.db not in ("mongodb", "all")
+    ):
+        parser.error("native MongoDB requires a DB suite containing "
+                     "MongoDB")
     try:
         sqlite_driver_env(args.sqlite_driver, args.siderite_group_commit)
     except ValueError as error:
@@ -949,6 +988,7 @@ def main():
                     fastapi_sqlite_mode=args.fastapi_sqlite_mode,
                     siderite_group_commit=args.siderite_group_commit,
                     sqlite_driver=args.sqlite_driver,
+                    mongo_driver=args.mongo_driver,
                 )
                 all_todo_results.update(res)
 

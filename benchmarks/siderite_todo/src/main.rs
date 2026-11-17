@@ -79,21 +79,77 @@ pub async fn open_db(url: &str) -> Result<Db, ApiError> {
     } else if url.starts_with("mysql://") {
         open_mysql(url).await
     } else if url.starts_with("mongodb://") {
-        let parsed = mongodb::options::ClientOptions::parse(url)
-            .await
-            .map_err(ApiError::internal)?;
-        let name = parsed.default_database.as_deref().unwrap_or("siderite");
-        let backend = MongoBackend::connect(url, name)
-            .await
-            .map_err(ApiError::internal)?;
-        if std::env::var_os("BENCHMARK_RUNTIME").is_some() {
-            let observed = mongo_settings::capture(backend.database(), &parsed).await?;
-            settings::emit(observed);
-        }
-        Ok(Db::new(backend))
+        open_mongo(url).await
     } else {
         open_sqlite(url).await
     }
+}
+
+/// Open MongoDB on the requested data path.
+///
+/// `SIDERITE_MONGO_DRIVER` (the runner's `--mongo-driver`) is `driver`
+/// (default) or `native`; `native` needs the `mongodb-native` feature and
+/// fails when the deployment does not qualify for the native read path.
+///
+/// Args:
+///     url: MongoDB benchmark URL, naming the pool size.
+///
+/// Returns:
+///     Configured database, or an explicit driver/setup error.
+async fn open_mongo(url: &str) -> Result<Db, ApiError> {
+    let parsed = mongodb::options::ClientOptions::parse(url)
+        .await
+        .map_err(ApiError::internal)?;
+    let name = parsed.default_database.as_deref().unwrap_or("siderite");
+    let driver = std::env::var("SIDERITE_MONGO_DRIVER");
+    let driver = driver.unwrap_or_else(|_| "driver".into());
+    let (backend, path) = match driver.as_str() {
+        "driver" => (
+            MongoBackend::connect(url, name)
+                .await
+                .map_err(ApiError::internal)?,
+            "driver",
+        ),
+        "native" => (open_native(url, name).await?, "native"),
+        _ => return Err(ApiError::internal("invalid SIDERITE_MONGO_DRIVER")),
+    };
+    if std::env::var_os("BENCHMARK_RUNTIME").is_some() {
+        let db = backend.database();
+        let mut observed = mongo_settings::capture(db, &parsed).await?;
+        mongo_settings::record_data_path(&mut observed, path);
+        settings::emit(observed);
+    }
+    Ok(Db::new(backend))
+}
+
+/// The backend on the native read path, or an error naming why the
+/// deployment does not qualify.
+///
+/// Args:
+///     url: MongoDB benchmark URL.
+///     name: Database name.
+///
+/// Returns:
+///     A backend whose reads use the native path.
+#[cfg(feature = "mongodb-native")]
+async fn open_native(url: &str, name: &str) -> Result<MongoBackend, ApiError> {
+    use siderite_backends::mongodb::DataPath;
+    let backend = MongoBackend::connect_native(url, name)
+        .await
+        .map_err(ApiError::internal)?;
+    if backend.data_path() != DataPath::Native {
+        return Err(ApiError::internal(format!(
+            "native MongoDB path requested but ineligible: {}",
+            backend.native_ineligibility().unwrap_or("unknown")
+        )));
+    }
+    Ok(backend)
+}
+
+#[cfg(not(feature = "mongodb-native"))]
+async fn open_native(url: &str, name: &str) -> Result<MongoBackend, ApiError> {
+    let _ = (url, name);
+    Err(ApiError::internal("build with mongodb-native feature"))
 }
 
 /// `SQLITE_PROFILE` (the runner's `--sqlite-profile`): `default`,

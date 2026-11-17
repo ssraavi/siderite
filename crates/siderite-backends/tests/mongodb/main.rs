@@ -11,11 +11,15 @@
 mod common;
 mod cursor;
 mod decode;
+#[cfg(feature = "mongodb-native")]
+mod failover;
 mod find;
 mod fixtures;
 mod functions;
 mod keys;
 mod lookups;
+#[cfg(feature = "mongodb-native")]
+mod native;
 mod queries;
 mod storage;
 mod transactions;

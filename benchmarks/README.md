@@ -182,6 +182,29 @@ rows through its own SQLite connection while the server is up. So the
 runner has no flag for it; measure it by starting the app yourself with the
 variable set (the app refuses it on the SQLx driver).
 
+## Native MongoDB read path
+
+Build the benchmark with the opt-in data path, then select it explicitly:
+
+```bash
+cargo build --release -p siderite_todo --features mongodb-native
+python3 benchmarks/run_benchmarks.py --suite db --db mongodb \
+  --mongo-driver native --todo-operation reads
+```
+
+`--mongo-driver driver` (the default) sends everything through the
+`mongodb` crate. `native` opens the backend with
+`MongoBackend::connect_native`: reads outside transactions go out as
+`OP_MSG` on a pool of its own (`maxPoolSize` connections, which the runner
+sets to `--pool-size`, in addition to the driver's pool); writes, and so
+`POST /todos`, still use the driver. The app reads `SIDERITE_MONGO_DRIVER`
+and exits when native was requested but the deployment does not qualify
+(TLS, credentials, SRV, a non-primary read preference, no reachable
+primary). Labels end in `-siderite-native`. The recorded database settings
+carry `data_path` (`driver` or `native`); it describes Siderite's client,
+so the paired comparison leaves it out of the settings both applications
+must share.
+
 
 The runner records repetition identities in timed trial JSON and emits a
 paired-comparison record for each workload. It reports the geometric mean

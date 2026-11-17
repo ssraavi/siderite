@@ -20,6 +20,7 @@ page covers how to connect, dialect notes, and Redis.
 | PostgreSQL | `postgres` | `PgBackend` | Live suite against `postgres:17` |
 | MySQL 8 | `mysql` | `MySqlBackend` | 8.0.31+; live suite against `mysql:8.4` |
 | MongoDB | `mongodb` | `MongoBackend` | 5.0+; replica set for transactions; supported QuerySet subset |
+| MongoDB (native reads) | `mongodb-native` | `MongoBackend::connect_native` | Opt-in `OP_MSG` read path outside transactions; plain `mongodb://` without TLS or credentials |
 | Redis | `redis` | `RedisStore` | Key/hash/set client. **Not** a QuerySet backend |
 
 DynamoDB is a design note only; it is not planned for v1.
@@ -200,6 +201,31 @@ gates. This adapter is experimental and has not replaced the default driver.
   `MongoBackend::create_unique_index`.
 - Joins, subqueries, set operations, window functions, row locking,
   `DISTINCT ON`, and array aggregates are capability errors (HTTP 501).
+
+### Native MongoDB read path
+
+Enable the `mongodb-native` feature on `siderite-backends` and connect with
+`MongoBackend::connect_native`. Reads outside transactions then use a small
+`OP_MSG` connection pool of the backend's own; the driver still runs writes,
+transactions, `raw_command` and index creation.
+
+```rust
+use siderite_backends::mongodb::{DataPath, MongoBackend};
+use siderite::orm::Db;
+
+let backend = MongoBackend::connect_native(&mongodb_url, "app").await?;
+assert_eq!(backend.data_path(), DataPath::Native);
+let db = Db::new(backend);
+```
+
+Eligibility is decided at connect: a plain `mongodb://` URL without TLS,
+credentials, `loadBalanced` or a non-primary read preference, and a writable
+MongoDB 5.0+ primary reachable from the seed list. Otherwise the backend
+quietly uses the driver; `native_ineligibility()` says why. The pool has
+`maxPoolSize` connections (default 10, besides the driver's) and waits at
+most `waitQueueTimeoutMS` (default 30 s) for one. After a network error or a
+"not primary" reply it looks for the primary again and retries the read once
+through the driver. SRV, TLS and authentication are planned follow-ups.
 
 ## Redis
 

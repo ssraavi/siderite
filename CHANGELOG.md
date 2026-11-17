@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+### Added
+- **ORM (MongoDB):** opt-in native read path, feature `mongodb-native` on
+  `siderite-backends` (off by default). `MongoBackend::connect_native(url,
+  database)` / `connect_native_with(.., NativeOptions)` connect the driver
+  as before and, when the deployment qualifies, send reads outside
+  transactions (`find`, `aggregate`, then `getMore` / `killCursors` on the
+  same connection) as `OP_MSG` on a pool of the backend's own: a semaphore
+  plus an idle stack checked out in the calling task, `maxPoolSize`
+  connections (default 10) opened on demand with `TCP_NODELAY` and reused
+  buffers, a bounded wait (`waitQueueTimeoutMS`, default 30 s). Eligibility
+  is decided once at connect: plain `mongodb://` without TLS, credentials,
+  `loadBalanced` or a non-primary read preference, and a writable
+  MongoDB 5.0+ primary found with `hello` from the seed list (honouring
+  `replicaSet`, `connectTimeoutMS`, `directConnection`); otherwise the
+  backend silently uses the driver (`data_path()`,
+  `native_ineligibility()`). Writes, transactions, `raw_command` and
+  indexes always use the driver. Server errors map to the same
+  `BackendError` as on the driver path; network errors and "not primary" /
+  shutdown replies retire the server's connections, rediscover the
+  primary and retry the read once through the driver. A cancelled read
+  never returns a half-read connection to the pool. Benchmark app:
+  `--features mongodb-native` and `SIDERITE_MONGO_DRIVER=native` (runner:
+  `--mongo-driver native`, labels `-siderite-native`); the `mongo` bench
+  adds `orm_native` to `mongo_get_pk` and `mongo_list`. In the benchmark
+  app (MongoDB 8.0 single-node replica set, pool 10, medians of 5
+  interleaved rounds) `GET /todos/1` serves 1.79x / 1.85x the requests
+  per second at 1 / 4 workers (server CPU per request 62 to 34 µs and 95
+  to 38 µs), `GET /todos` (20 todos) 1.52x / 1.56x, and `POST /todos` is
+  unchanged (0.97x, within noise). A primary-key `get` takes about 70 µs
+  against 102 µs on the driver, 4 µs above a hand-rolled `OP_MSG` find.
+
 ### Changed
 - **ORM (MongoDB):** reads decode each result document straight from the
   raw BSON of the server's reply: `MongoBackend` and its transactions

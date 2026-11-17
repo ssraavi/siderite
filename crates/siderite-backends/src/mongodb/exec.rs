@@ -6,6 +6,8 @@ use super::compile::{
 };
 use super::decode::{Collect, Decoder, doc_to_row, raw_id};
 use super::keys::KeyAllocator;
+#[cfg(feature = "mongodb-native")]
+use super::native::{DataPath, Native, NativeOptions, NativeState};
 use ::mongodb::bson::raw::RawDocument;
 use ::mongodb::bson::{Bson, Document, doc};
 use ::mongodb::error::{Error as DriverError, ErrorKind};
@@ -29,12 +31,18 @@ use tokio::sync::Mutex;
 /// [`MongoBackend::with_key_block_size`]).
 ///
 /// Clones share the connection pool and the cached key blocks.
+///
+/// With the `mongodb-native` feature, [`connect_native`](Self::connect_native)
+/// also opens the native data path for reads (see the
+/// [module docs](crate::mongodb#native-data-path)).
 #[derive(Debug, Clone)]
 pub struct MongoBackend {
     client: Client,
     db: Database,
     keys: Arc<Keys>,
     key_blocks: Arc<KeyAllocator>,
+    #[cfg(feature = "mongodb-native")]
+    native: NativeState,
 }
 
 impl MongoBackend {
@@ -62,7 +70,62 @@ impl MongoBackend {
             client,
             keys: Arc::new(Keys::default()),
             key_blocks: Arc::new(KeyAllocator::default()),
+            #[cfg(feature = "mongodb-native")]
+            native: NativeState::Off,
         }
+    }
+
+    /// Connect like [`connect`](Self::connect) and, when the deployment
+    /// qualifies, send reads outside transactions on the native `OP_MSG`
+    /// path (feature `mongodb-native`).
+    ///
+    /// Eligibility is decided once, here: a plain `mongodb://` URL without
+    /// TLS, credentials, `loadBalanced` or a non-primary read preference,
+    /// and a writable primary (MongoDB 5.0+, of the URL's `replicaSet` when
+    /// it names one) reachable from the seed list. Otherwise the backend
+    /// silently uses the driver for everything; [`data_path`](Self::data_path)
+    /// and [`native_ineligibility`](Self::native_ineligibility) say which
+    /// path is active and why. The driver client is set up either way and
+    /// runs writes, transactions, admin commands and index creation.
+    ///
+    /// # Errors
+    /// [`BackendError::Connection`] if the URL is invalid or no server can be
+    /// reached by the driver.
+    #[cfg(feature = "mongodb-native")]
+    pub async fn connect_native(url: &str, database: &str) -> Connected {
+        let options = NativeOptions::default();
+        Self::connect_native_with(url, database, options).await
+    }
+
+    /// [`connect_native`](Self::connect_native) with explicit pool
+    /// settings.
+    ///
+    /// # Errors
+    /// [`BackendError::Connection`] if the URL is invalid or no server can be
+    /// reached by the driver.
+    #[cfg(feature = "mongodb-native")]
+    pub async fn connect_native_with(
+        url: &str,
+        database: &str,
+        options: NativeOptions,
+    ) -> Connected {
+        let mut backend = Self::connect(url, database).await?;
+        let native = NativeState::connect(url, &backend.db, &options);
+        backend.native = native.await;
+        Ok(backend)
+    }
+
+    /// Which path reads outside transactions take.
+    #[cfg(feature = "mongodb-native")]
+    pub fn data_path(&self) -> DataPath {
+        self.native.data_path()
+    }
+
+    /// Why [`connect_native`](Self::connect_native) fell back to the
+    /// driver (`None` when the native path is active or was not requested).
+    #[cfg(feature = "mongodb-native")]
+    pub fn native_ineligibility(&self) -> Option<&str> {
+        self.native.ineligibility()
     }
 
     /// Set which column of each collection is stored as `_id` (default: a
@@ -151,13 +214,7 @@ impl MongoBackend {
         sink: &mut dyn RowSink,
     ) -> Result<(), OrmError> {
         let compiled = compile_query(plan, &self.keys)?;
-        Io {
-            db: &self.db,
-            key_blocks: &self.key_blocks,
-            session,
-        }
-        .query(compiled, sink)
-        .await
+        self.io(session).query(compiled, sink).await
     }
 
     async fn run_execute(
@@ -166,15 +223,24 @@ impl MongoBackend {
         session: Option<&mut ClientSession>,
     ) -> Result<ExecResult, OrmError> {
         let compiled = compile_write(plan, &self.keys)?;
+        self.io(session).write(compiled).await
+    }
+
+    fn io<'a>(&'a self, session: Option<&'a mut ClientSession>) -> Io<'a> {
         Io {
             db: &self.db,
             key_blocks: &self.key_blocks,
+            // Sessions (transactions) always use the driver.
+            #[cfg(feature = "mongodb-native")]
+            native: self.native.active().filter(|_| session.is_none()),
             session,
         }
-        .write(compiled)
-        .await
     }
 }
+
+/// A connected backend, or why it could not connect.
+#[cfg(feature = "mongodb-native")]
+type Connected = Result<MongoBackend, BackendError>;
 
 fn raw_unsupported() -> OrmError {
     BackendCapabilityError::from_feature(BackendKind::MongoDb, Feature::RawSql).into()
@@ -273,26 +339,14 @@ impl Executor for MongoTransaction {
         let compiled = compile_query(plan, &self.backend.keys)?;
         let mut guard = self.session.lock().await;
         let session = guard.as_mut().ok_or(QueryError::TransactionClosed)?;
-        Io {
-            db: &self.backend.db,
-            key_blocks: &self.backend.key_blocks,
-            session: Some(session),
-        }
-        .query(compiled, sink)
-        .await
+        self.backend.io(Some(session)).query(compiled, sink).await
     }
 
     async fn execute(&self, plan: &WritePlan) -> Result<ExecResult, OrmError> {
         let compiled = compile_write(plan, &self.backend.keys)?;
         let mut guard = self.session.lock().await;
         let session = guard.as_mut().ok_or(QueryError::TransactionClosed)?;
-        Io {
-            db: &self.backend.db,
-            key_blocks: &self.backend.key_blocks,
-            session: Some(session),
-        }
-        .write(compiled)
-        .await
+        self.backend.io(Some(session)).write(compiled).await
     }
 
     async fn fetch_raw(&self, _sql: &str, _params: Vec<Value>) -> Result<QueryResult, OrmError> {
@@ -354,6 +408,9 @@ fn db_err(e: &DriverError) -> OrmError {
 struct Io<'a> {
     db: &'a Database,
     key_blocks: &'a KeyAllocator,
+    /// The native path, when active and there is no session.
+    #[cfg(feature = "mongodb-native")]
+    native: Option<&'a Native>,
     session: Option<&'a mut ClientSession>,
 }
 
@@ -366,12 +423,29 @@ impl Io<'_> {
         self.session.as_deref_mut()
     }
 
-    /// Run `read` on `collection`, handing each document to `each` as the
-    /// driver reads it.
+    /// Run `read` on `collection`, handing each document to `each` as it
+    /// is read.
+    ///
+    /// On the native path, a read that fails before any document reached
+    /// `each` with a connection error or a "not primary" reply (or that the
+    /// native pool cannot serve right now) runs once more on the driver,
+    /// which selects the server itself.
     async fn each<F>(&mut self, collection: &str, read: Read, mut each: F) -> Result<(), OrmError>
     where
         F: FnMut(&RawDocument) -> Result<(), OrmError> + Send,
     {
+        #[cfg(feature = "mongodb-native")]
+        if let Some(native) = self.native {
+            let mut delivered = false;
+            match native
+                .read(collection, &read, &mut each, &mut delivered)
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(e) if !delivered && e.use_driver() => {}
+                Err(e) => return Err(e.into_orm()),
+            }
+        }
         let coll = self.coll(collection);
         match self.session() {
             Some(session) => {
