@@ -17,8 +17,8 @@
   MongoDB 5.0+ primary found with `hello` from the seed list (honouring
   `replicaSet`, `connectTimeoutMS`, `directConnection`); otherwise the
   backend silently uses the driver (`data_path()`,
-  `native_ineligibility()`). Writes, transactions, `raw_command` and
-  indexes always use the driver. Server errors map to the same
+  `native_ineligibility()`). Transactions, `raw_command` and indexes
+  always use the driver (writes: see the next entry). Server errors map to the same
   `BackendError` as on the driver path; network errors and "not primary" /
   shutdown replies retire the server's connections, rediscover the
   primary and retry the read once through the driver. A cancelled read
@@ -32,6 +32,31 @@
   to 38 µs), `GET /todos` (20 todos) 1.52x / 1.56x, and `POST /todos` is
   unchanged (0.97x, within noise). A primary-key `get` takes about 70 µs
   against 102 µs on the driver, 4 µs above a hand-rolled `OP_MSG` find.
+- **ORM (MongoDB):** the native path (`mongodb-native`) also runs writes
+  outside transactions: `insert` (documents as a kind-1 sequence, split in
+  order at `maxWriteBatchSize` / `maxMessageSizeBytes` or the new
+  `NativeOptions::max_write_batch_size`), `update` (`multi: true`),
+  `delete` (`limit: 0`) and the key counter's `findAndModify`, with the
+  database's write concern serialized as the driver does (`w=0` stays on
+  the driver). `writeErrors` / `writeConcernError` become the driver's own
+  error values, so they classify and read as on the driver path.
+  Retryable writes follow the driver's rules: `insert` and `findAndModify`
+  carry `lsid` (a native LIFO session pool; sessions near
+  `logicalSessionTimeoutMinutes`, hit by a network error or cancelled
+  mid-write are discarded) and a growing `txnNumber`, unless
+  `retryWrites=false` or the server is a standalone; after a network error
+  or a `RetryableWriteError` / not-primary / shutdown / `ExceededTimeLimit`
+  error (also as `writeConcernError`) the primary is found again (up to
+  `serverSelectionTimeoutMS`) and the command is resent once with the same
+  `lsid` / `txnNumber` (fail-point tests check the server applies it once).
+  A write that may have been sent never moves to the driver. In the
+  benchmark app (same setup, 5 interleaved rounds of 10 s) `POST /todos`
+  serves 1.17x / 1.09x the requests per second of the driver at 1 / 4
+  workers (server CPU per request 80 to 49 µs and 128 to 83 µs); reads are
+  unchanged against the read-only native path (0.97x-1.00x). A `w=1`
+  `create` takes about 120 µs against 151 µs on the driver. On a
+  three-member replica set stepped down under 16 concurrent inserters,
+  neither path failed a write or applied one twice.
 
 ### Changed
 - **ORM (MongoDB):** reads decode each result document straight from the

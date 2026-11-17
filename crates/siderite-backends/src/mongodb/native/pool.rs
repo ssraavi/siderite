@@ -18,7 +18,8 @@
 //! opened before it and forgets the primary; the next checkout runs the
 //! discovery again. While discovery runs, or for a short while after it
 //! failed, checkout reports [`Checkout::Unavailable`] and the caller uses
-//! the driver.
+//! the driver ([`Pool::checkout_by`] keeps looking instead, for a write
+//! retry that must stay native).
 
 use super::conn::{Address, Conn, ConnSpec, Hello, Phase};
 use std::collections::{HashSet, VecDeque};
@@ -30,6 +31,8 @@ use tokio::sync::{Semaphore, SemaphorePermit};
 /// How long a failed discovery keeps the native path unavailable before
 /// the next attempt.
 const DISCOVERY_BACKOFF: Duration = Duration::from_millis(250);
+/// How often [`Pool::checkout_by`] asks for a primary again.
+const PRIMARY_POLL: Duration = Duration::from_millis(50);
 
 /// Why a checkout did not produce a connection.
 #[derive(Debug)]
@@ -137,6 +140,25 @@ impl Pool {
             conn: Some(conn),
             permit: Some(permit),
         })
+    }
+
+    /// Like [`checkout`](Self::checkout), but while no primary is known
+    /// keep looking for one until `deadline` (a retried write must run
+    /// natively, so it waits for the election like the driver's server
+    /// selection does).
+    pub(super) async fn checkout_by(self: &Arc<Self>, deadline: Instant) -> Checked<'_> {
+        loop {
+            match self.checkout().await {
+                Err(Checkout::Unavailable(why)) => {
+                    let now = Instant::now();
+                    if now >= deadline {
+                        return Err(Checkout::Unavailable(why));
+                    }
+                    tokio::time::sleep(PRIMARY_POLL.min(deadline - now)).await;
+                }
+                done => return done,
+            }
+        }
     }
 
     /// A permit, waiting at most the wait timeout for one.

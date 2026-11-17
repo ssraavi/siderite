@@ -1,10 +1,11 @@
 //! `OP_MSG` framing and a BSON writer for command documents.
 //!
-//! A request is one message: the 16-byte header, the flag bits and a single
-//! kind-0 section holding the command document, which [`DocWriter`] writes
-//! element by element straight into the connection's reused buffer (the
-//! filter and pipeline documents the compiler built are serialized in
-//! place, without an intermediate command document).
+//! A request is one message: the 16-byte header, the flag bits, a kind-0
+//! section holding the command document, which [`DocWriter`] writes element
+//! by element straight into the connection's reused buffer (the filter and
+//! pipeline documents the compiler built are serialized in place, without
+//! an intermediate command document), and for inserts a kind-1 document
+//! sequence (`documents`) after it.
 
 use ::mongodb::bson::Document;
 use ::mongodb::bson::raw::RawDocument;
@@ -25,9 +26,13 @@ const MORE_TO_COME: u32 = 1 << 1;
 /// Bits 0-15 are required: an unknown one must fail the message.
 const REQUIRED_BITS: u32 = 0xffff;
 
+/// Section kind of a document sequence.
+const SEQUENCE: u8 = 1;
+
 const TYPE_STRING: u8 = 0x02;
 const TYPE_DOCUMENT: u8 = 0x03;
 const TYPE_ARRAY: u8 = 0x04;
+const TYPE_BINARY: u8 = 0x05;
 const TYPE_BOOL: u8 = 0x08;
 const TYPE_INT32: u8 = 0x10;
 const TYPE_INT64: u8 = 0x12;
@@ -70,9 +75,38 @@ pub(super) fn finish_request(out: &mut [u8], request_id: i32) -> Res<()> {
     Ok(())
 }
 
-/// The command document of the request in `out`.
+/// The command document of the request in `out` (without the document
+/// sequence that may follow it).
 pub(super) fn request_body(out: &[u8]) -> &[u8] {
-    out.get(PREFIX_LEN..).unwrap_or_default()
+    let len = le_i32(out, PREFIX_LEN)
+        .ok()
+        .and_then(|len| usize::try_from(len).ok())
+        .unwrap_or(usize::MAX);
+    let end = PREFIX_LEN.saturating_add(len).min(out.len());
+    out.get(PREFIX_LEN..end).unwrap_or_default()
+}
+
+/// Start a kind-1 document sequence named `id` after the command document
+/// in `out`; returns where it starts, for [`finish_sequence`].
+pub(super) fn begin_sequence(out: &mut Vec<u8>, id: &str) -> Res<usize> {
+    if id.as_bytes().contains(&0) {
+        return Err(protocol("sequence identifier contains NUL"));
+    }
+    let start = out.len();
+    out.push(SEQUENCE);
+    out.extend_from_slice(&[0; 4]);
+    out.extend_from_slice(id.as_bytes());
+    out.push(0);
+    Ok(start)
+}
+
+/// Fill in the size of the sequence that starts at `start` and runs to the
+/// end of `out` (the size counts itself, not the kind byte).
+pub(super) fn finish_sequence(out: &mut [u8], start: usize) -> Res<()> {
+    let len = out.len().saturating_sub(start + 1);
+    let len = i32::try_from(len).map_err(|_| protocol("document sequence too large"))?;
+    out[start + 1..start + 5].copy_from_slice(&len.to_le_bytes());
+    Ok(())
 }
 
 /// The body document of the reply `msg` (the whole message, header
@@ -186,6 +220,17 @@ impl<'a> DocWriter<'a> {
         Ok(())
     }
 
+    /// A binary field of BSON subtype `subtype`.
+    pub(super) fn binary(&mut self, key: &str, subtype: u8, bytes: &[u8]) -> Res<()> {
+        self.key(TYPE_BINARY, key)?;
+        let too_long = |_| protocol("BSON binary too long");
+        let len = i32::try_from(bytes.len()).map_err(too_long)?;
+        self.buf.extend_from_slice(&len.to_le_bytes());
+        self.buf.push(subtype);
+        self.buf.extend_from_slice(bytes);
+        Ok(())
+    }
+
     /// An embedded document, serialized from `doc`.
     pub(super) fn doc(&mut self, key: &str, doc: &Document) -> Res<()> {
         self.key(TYPE_DOCUMENT, key)?;
@@ -212,6 +257,13 @@ impl<'a> DocWriter<'a> {
         write_document(self.buf, doc)
     }
 
+    /// Append a document to an array, to fill in; finish it before using
+    /// `self` again.
+    pub(super) fn push_sub(&mut self) -> Res<DocWriter<'_>> {
+        self.index_key(TYPE_DOCUMENT);
+        Ok(DocWriter::begin(self.buf))
+    }
+
     /// Append an `int64` to an array.
     pub(super) fn push_i64(&mut self, value: i64) {
         self.index_key(TYPE_INT64);
@@ -229,14 +281,16 @@ impl<'a> DocWriter<'a> {
     }
 }
 
-fn write_document(buf: &mut Vec<u8>, doc: &Document) -> Res<()> {
+/// Append `doc` to `buf` as BSON.
+pub(super) fn write_document(buf: &mut Vec<u8>, doc: &Document) -> Res<()> {
     doc.to_writer(buf).map_err(|e| protocol(e.to_string()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ::mongodb::bson::{doc, rawdoc};
+    use ::mongodb::bson::spec::BinarySubtype;
+    use ::mongodb::bson::{Binary, doc, rawdoc};
 
     #[test]
     fn writer_matches_the_bson_crate() {
@@ -251,6 +305,7 @@ mod tests {
         a.push_doc(&doc! { "$match": {} }).unwrap();
         a.push_i64(7);
         a.finish().unwrap();
+        w.binary("id", 4, &[7; 16]).unwrap();
         let mut s = w.sub("cursor").unwrap();
         s.i32("batchSize", 0).unwrap();
         s.finish().unwrap();
@@ -259,6 +314,7 @@ mod tests {
             "find": "todos", "filter": { "_id": 1_i64 }, "limit": 2_i64,
             "batchSize": 3_i32, "singleBatch": false,
             "pipeline": [{ "$match": {} }, 7_i64],
+            "id": Binary { subtype: BinarySubtype::Uuid, bytes: vec![7; 16] },
             "cursor": { "batchSize": 0_i32 },
         };
         assert_eq!(buf, expected.as_bytes());
@@ -287,7 +343,16 @@ mod tests {
         let body = reply_body(&reply, 7).unwrap();
         assert_eq!(body.get_i32("ok").unwrap(), 1);
         assert_eq!(request_body(&out), body.as_bytes());
+        let body_bytes = |out: &[u8]| request_body(out).to_vec();
         assert!(reply_body(&reply, 8).is_err());
+        // A document sequence after the body is skipped.
+        let at = begin_sequence(&mut reply, "documents").unwrap();
+        write_document(&mut reply, &doc! { "a": 1_i32 }).unwrap();
+        finish_sequence(&mut reply, at).unwrap();
+        let len = i32::try_from(reply.len()).unwrap();
+        reply[0..4].copy_from_slice(&len.to_le_bytes());
+        assert_eq!(reply_body(&reply, 7).unwrap().get_i32("ok").unwrap(), 1);
+        assert_eq!(request_body(&reply), body_bytes(&out));
         reply[16] = 2; // moreToCome
         assert!(reply_body(&reply, 7).is_err());
     }

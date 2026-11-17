@@ -1,5 +1,6 @@
-//! The native read path (feature `mongodb-native`): path selection, cursors,
-//! cancellation, pool limits, error mapping and transactions.
+//! The native read path (feature `mongodb-native`; writes are in
+//! `native_writes.rs`): path selection, cursors, cancellation, pool limits,
+//! error mapping and transactions.
 
 use crate::fixtures::TestDb;
 use mongodb::bson::{Document, doc};
@@ -11,12 +12,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-fn url() -> String {
+pub(crate) fn url() -> String {
     std::env::var("MONGODB_URL").unwrap()
 }
 
 /// `url` with `option` added to its query string.
-fn with_option(url: &str, option: &str) -> String {
+pub(crate) fn with_option(url: &str, option: &str) -> String {
     if url.contains('?') {
         format!("{url}&{option}")
     } else if url.ends_with('/') {
@@ -31,9 +32,12 @@ fn item_doc(i: i64) -> Document {
 }
 
 /// A fresh database holding `items` `{_id: i, n: i}` for `i` in `1..=n`.
-async fn items(n: i64) -> TestDb {
+pub(crate) async fn items(n: i64) -> TestDb {
     let t = TestDb::open().await.unwrap();
     let docs: Vec<Document> = (1..=n).map(item_doc).collect();
+    if docs.is_empty() {
+        return t;
+    }
     t.backend
         .database()
         .collection::<Document>("items")
@@ -44,7 +48,7 @@ async fn items(n: i64) -> TestDb {
 }
 
 /// A native backend on `t`'s database.
-async fn native_on(t: &TestDb, url: &str, o: NativeOptions) -> MongoBackend {
+pub(crate) async fn native_on(t: &TestDb, url: &str, o: NativeOptions) -> MongoBackend {
     let name = t.backend.database().name();
     let connect = MongoBackend::connect_native_with(url, name, o);
     let backend = connect.await.unwrap();
@@ -57,7 +61,7 @@ async fn native_on(t: &TestDb, url: &str, o: NativeOptions) -> MongoBackend {
     backend
 }
 
-fn all_items() -> QueryPlan {
+pub(crate) fn all_items() -> QueryPlan {
     let id = Expr::col("id");
     QueryPlan::from_table("items").order_by(id, OrderDirection::Asc)
 }
@@ -67,11 +71,11 @@ fn as_long() -> Expr {
     Expr::col("n").cast(SqlType::BigInt)
 }
 
-fn item(id: i64) -> QueryPlan {
+pub(crate) fn item(id: i64) -> QueryPlan {
     QueryPlan::from_table("items").filter(Expr::col("id").eq(Value::Int(id)))
 }
 
-fn ids(rows: &[siderite_orm::Row]) -> Vec<i64> {
+pub(crate) fn ids(rows: &[siderite_orm::Row]) -> Vec<i64> {
     rows.iter()
         .map(|r| match r.get("n") {
             Some(Value::Int(n)) => *n,

@@ -1,13 +1,15 @@
-//! The native data path (feature `mongodb-native`): reads sent as `OP_MSG`
-//! messages on a small connection pool of the backend's own, bypassing the
-//! driver's per-operation server selection, implicit session and pool
-//! hand-off. See the "Native data path" section of the
+//! The native data path (feature `mongodb-native`): reads and writes sent
+//! as `OP_MSG` messages on a small connection pool of the backend's own,
+//! bypassing the driver's per-operation server selection, implicit session
+//! and pool hand-off. See the "Native data path" section of the
 //! [module docs](crate::mongodb) for what it covers.
 
 mod conn;
 mod cursor;
 mod pool;
+mod session;
 mod wire;
+mod write;
 
 use super::compile::Read;
 use super::exec::map_error;
@@ -15,9 +17,11 @@ use ::mongodb::bson::raw::RawDocument;
 use ::mongodb::bson::{Document, to_document};
 use ::mongodb::error::{CommandError, Error as DriverError, ErrorKind};
 use ::mongodb::options::SelectionCriteria as Selection;
-use ::mongodb::options::{ClientOptions, ReadPreference, ServerAddress, Tls};
+use ::mongodb::options::{Acknowledgment, ClientOptions, ReadPreference};
+use ::mongodb::options::{ServerAddress, Tls, WriteConcern};
 use conn::{Address, ConnSpec};
 use pool::{Checkout, Pool, PoolSpec};
+use session::SessionPool;
 use siderite_orm::{BackendError, OrmError};
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,6 +33,9 @@ const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Wait for a free native connection when the URL sets no
 /// `waitQueueTimeoutMS` (the driver's default server selection timeout).
 const DEFAULT_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+/// The driver's default `serverSelectionTimeoutMS`: how long a retried
+/// write waits for a primary.
+const DEFAULT_SELECTION_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Which path a [`MongoBackend`](super::MongoBackend) sends its reads on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,8 +43,8 @@ const DEFAULT_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 pub enum DataPath {
     /// Everything goes through the `mongodb` driver.
     Driver,
-    /// Reads outside transactions use the native `OP_MSG` pool; everything
-    /// else uses the driver.
+    /// Reads and writes outside transactions use the native `OP_MSG` pool;
+    /// everything else uses the driver.
     Native,
 }
 
@@ -53,6 +60,11 @@ pub struct NativeOptions {
     /// [`BackendError::Connection`] (default: the URL's
     /// `waitQueueTimeoutMS`, else 30 s).
     pub wait_timeout: Option<Duration>,
+    /// At most this many documents per native `insert` command (default
+    /// and upper bound: the server's `maxWriteBatchSize`, 100 000 on
+    /// current servers). Larger inserts are split into several commands,
+    /// in order, as they are when they exceed the message size limit.
+    pub max_write_batch_size: Option<usize>,
 }
 
 impl NativeOptions {
@@ -67,6 +79,13 @@ impl NativeOptions {
     #[must_use]
     pub fn wait_timeout(mut self, wait: Duration) -> Self {
         self.wait_timeout = Some(wait);
+        self
+    }
+
+    /// Set [`max_write_batch_size`](Self::max_write_batch_size).
+    #[must_use]
+    pub fn max_write_batch_size(mut self, n: usize) -> Self {
+        self.max_write_batch_size = Some(n);
         self
     }
 }
@@ -91,6 +110,7 @@ impl std::fmt::Debug for NativeState {
                 .debug_struct("Active")
                 .field("primary", &native.pool.primary().map(primary))
                 .field("max_connections", &native.pool.max_connections())
+                .field("writes", &native.writes.enabled)
                 .finish(),
             Self::Ineligible(why) => write!(f, "Ineligible({why:?})"),
         }
@@ -138,6 +158,50 @@ pub(super) struct Native {
     pool: Arc<Pool>,
     db: String,
     read_concern: Option<Document>,
+    writes: WriteSpec,
+    sessions: SessionPool,
+}
+
+/// How native writes run.
+#[derive(Debug)]
+struct WriteSpec {
+    /// Writes use the native path (not with an unacknowledged write
+    /// concern, which the driver rejects).
+    enabled: bool,
+    /// The database's write concern as the driver sends it (`None` when
+    /// the driver sends none).
+    write_concern: Option<Document>,
+    /// Retryable writes, unless the URL says `retryWrites=false`.
+    retry_writes: bool,
+    /// How long a retry waits for a primary.
+    selection_timeout: Duration,
+    max_write_batch: Option<usize>,
+}
+
+impl WriteSpec {
+    fn new(
+        parsed: &ClientOptions,
+        concern: Option<&WriteConcern>,
+        options: &NativeOptions,
+    ) -> Result<Self, String> {
+        let unacknowledged = concern
+            .is_some_and(|wc| wc.w == Some(Acknowledgment::Nodes(0)) && wc.journal != Some(true));
+        let write_concern = concern
+            .map(to_document)
+            .transpose()
+            .map_err(|e| e.to_string())?
+            .filter(|doc| !doc.is_empty());
+        Ok(Self {
+            enabled: !unacknowledged,
+            write_concern,
+            retry_writes: parsed.retry_writes != Some(false),
+            selection_timeout: parsed
+                .server_selection_timeout
+                .filter(|d| !d.is_zero())
+                .unwrap_or(DEFAULT_SELECTION_TIMEOUT),
+            max_write_batch: options.max_write_batch_size.filter(|n| *n > 0),
+        })
+    }
 }
 
 impl Native {
@@ -161,12 +225,20 @@ impl Native {
             .map(to_document)
             .transpose()
             .map_err(|e| e.to_string())?;
+        let writes = WriteSpec::new(&parsed, db.write_concern(), options)?;
         let pool = Pool::connect(spec).await?;
         Ok(Self {
             pool: Arc::new(pool),
             db: db.name().to_owned(),
             read_concern,
+            writes,
+            sessions: SessionPool::default(),
         })
+    }
+
+    /// Whether writes take the native path.
+    pub(super) fn writes(&self) -> bool {
+        self.writes.enabled
     }
 
     /// Run `read` on `collection`, handing each document to `each`;
@@ -187,6 +259,25 @@ impl Native {
             read_concern: self.read_concern.as_ref(),
         };
         cursor::run(&self.pool, &target, read, each, delivered).await
+    }
+}
+
+/// Run `write` on the native path when it takes writes: `None` when the
+/// driver should run the write (no native path, writes not native, or the
+/// native pool could not start it and sent nothing).
+pub(super) async fn try_write<'a, T, F, Fut>(
+    native: Option<&'a Native>,
+    write: F,
+) -> Option<Result<T, OrmError>>
+where
+    F: FnOnce(&'a Native) -> Fut,
+    Fut: Future<Output = Result<T, NativeError>>,
+{
+    let native = native.filter(|n| n.writes())?;
+    match write(native).await {
+        Ok(done) => Some(Ok(done)),
+        Err(e) if e.unsent() => None,
+        Err(e) => Some(Err(e.into_orm())),
     }
 }
 
@@ -273,12 +364,19 @@ fn url_millis(url: &str, key: &str) -> Option<Duration> {
     })
 }
 
-/// A native read that did not complete.
+/// A native read or write that did not complete.
 #[derive(Debug)]
 pub(super) enum NativeError {
-    /// The native path cannot serve the read now (no primary known, or
-    /// the command exceeds the size limits); the driver should.
+    /// The native path cannot serve the request now (no primary known, or
+    /// the command exceeds the size limits) and sent nothing; the driver
+    /// should.
     Unavailable(String),
+    /// A write failed after it may have reached the server, for a reason of
+    /// the native path's own (no primary for its retry).
+    Lost(String),
+    /// A write's `writeErrors` / `writeConcernError`, as the driver
+    /// reports them.
+    Write(Box<ErrorKind>),
     /// No connection became free in time.
     Timeout(Duration),
     /// The connection failed (and was closed).
@@ -317,6 +415,12 @@ impl NativeError {
         )
     }
 
+    /// Whether a write failed before anything was sent, so the driver may
+    /// run it instead.
+    pub(super) fn unsent(&self) -> bool {
+        matches!(self, Self::Unavailable(_))
+    }
+
     /// The error a caller sees, classified as the driver path classifies
     /// the same failure ([`map_error`]).
     pub(super) fn into_orm(self) -> OrmError {
@@ -325,6 +429,11 @@ impl NativeError {
                 let why = format!("native MongoDB path unavailable: {why}");
                 BackendError::Connection(why).into()
             }
+            Self::Lost(why) => {
+                let why = format!("native MongoDB write failed: {why}");
+                BackendError::Connection(why).into()
+            }
+            Self::Write(kind) => map_error(&DriverError::from(*kind)).into(),
             Self::Timeout(wait) => BackendError::Connection(format!(
                 "no native MongoDB connection became free within {wait:?}"
             ))

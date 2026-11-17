@@ -57,8 +57,8 @@ mysql-native = [
     "dep:serde_json",
 ]
 mongodb = ["dep:mongodb", "dep:chrono", "dep:rust_decimal", "dep:serde_json", "dep:uuid"]
-# Opt-in OP_MSG read path on a pool of its own; the driver stays in charge
-# of everything else (see the MongoDB module docs).
+# Opt-in OP_MSG reads and retryable writes on a pool of their own; the
+# driver stays in charge of everything else (see the MongoDB module docs).
 mongodb-native = ["mongodb", "tokio/net", "tokio/io-util"]
 redis = ["dep:redis", "dep:serde", "dep:serde_json"]
 

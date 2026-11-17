@@ -5,9 +5,10 @@ use super::compile::{
     Read, UpdateSpec, compile_query, compile_write,
 };
 use super::decode::{Collect, Decoder, doc_to_row, raw_id};
+use super::keys::Counters;
 use super::keys::KeyAllocator;
 #[cfg(feature = "mongodb-native")]
-use super::native::{DataPath, Native, NativeOptions, NativeState};
+use super::native::{DataPath, Native, NativeOptions, NativeState, try_write};
 use ::mongodb::bson::raw::RawDocument;
 use ::mongodb::bson::{Bson, Document, doc};
 use ::mongodb::error::{Error as DriverError, ErrorKind};
@@ -33,7 +34,7 @@ use tokio::sync::Mutex;
 /// Clones share the connection pool and the cached key blocks.
 ///
 /// With the `mongodb-native` feature, [`connect_native`](Self::connect_native)
-/// also opens the native data path for reads (see the
+/// also opens the native data path for reads and writes (see the
 /// [module docs](crate::mongodb#native-data-path)).
 #[derive(Debug, Clone)]
 pub struct MongoBackend {
@@ -76,8 +77,9 @@ impl MongoBackend {
     }
 
     /// Connect like [`connect`](Self::connect) and, when the deployment
-    /// qualifies, send reads outside transactions on the native `OP_MSG`
-    /// path (feature `mongodb-native`).
+    /// qualifies, send reads and writes outside transactions on the native
+    /// `OP_MSG` path (feature `mongodb-native`; writes are retryable as on
+    /// the driver path).
     ///
     /// Eligibility is decided once, here: a plain `mongodb://` URL without
     /// TLS, credentials, `loadBalanced` or a non-primary read preference,
@@ -86,7 +88,8 @@ impl MongoBackend {
     /// silently uses the driver for everything; [`data_path`](Self::data_path)
     /// and [`native_ineligibility`](Self::native_ineligibility) say which
     /// path is active and why. The driver client is set up either way and
-    /// runs writes, transactions, admin commands and index creation.
+    /// runs transactions, admin commands, index creation and whatever the
+    /// native pool cannot start (no primary known yet).
     ///
     /// # Errors
     /// [`BackendError::Connection`] if the URL is invalid or no server can be
@@ -115,7 +118,7 @@ impl MongoBackend {
         Ok(backend)
     }
 
-    /// Which path reads outside transactions take.
+    /// Which path reads and writes outside transactions take.
     #[cfg(feature = "mongodb-native")]
     pub fn data_path(&self) -> DataPath {
         self.native.data_path()
@@ -481,7 +484,20 @@ impl Io<'_> {
         Ok(())
     }
 
+    /// Where generated keys are reserved.
+    fn counters(&self) -> Counters<'_> {
+        Counters {
+            db: self.db,
+            #[cfg(feature = "mongodb-native")]
+            native: self.native,
+        }
+    }
+
     async fn insert_many(&mut self, collection: &str, docs: &[Document]) -> Result<(), OrmError> {
+        #[cfg(feature = "mongodb-native")]
+        if let Some(done) = try_write(self.native, |n| n.insert(collection, docs)).await {
+            return done.map(|_| ());
+        }
         let coll = self.coll(collection);
         match self.session() {
             Some(session) => coll.insert_many(docs).session(session).await,
@@ -497,6 +513,11 @@ impl Io<'_> {
         filter: Document,
         update: UpdateSpec,
     ) -> Result<u64, OrmError> {
+        #[cfg(feature = "mongodb-native")]
+        if let Some(done) = try_write(self.native, |n| n.update(collection, &filter, &update)).await
+        {
+            return done;
+        }
         let coll = self.coll(collection);
         let result = match (update, self.session()) {
             (UpdateSpec::Set(doc), Some(s)) => coll.update_many(filter, doc).session(s).await,
@@ -508,6 +529,10 @@ impl Io<'_> {
     }
 
     async fn delete_many(&mut self, collection: &str, filter: Document) -> Result<u64, OrmError> {
+        #[cfg(feature = "mongodb-native")]
+        if let Some(done) = try_write(self.native, |n| n.delete(collection, &filter)).await {
+            return done;
+        }
         let coll = self.coll(collection);
         match self.session() {
             Some(session) => coll.delete_many(filter).session(session).await,
@@ -563,7 +588,7 @@ impl Io<'_> {
         let missing = docs.iter().filter(|d| !d.contains_key("_id")).count();
         let mut next = if missing > 0 {
             self.key_blocks
-                .reserve(self.db, &collection, missing)
+                .reserve(self.counters(), &collection, missing)
                 .await?
         } else {
             0

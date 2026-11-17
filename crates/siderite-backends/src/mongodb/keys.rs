@@ -15,6 +15,8 @@
 //! server's atomic `$inc` reserved for this process, and each key is handed
 //! out at most once.
 
+#[cfg(feature = "mongodb-native")]
+use super::native::{Native, try_write};
 use ::mongodb::Database;
 use ::mongodb::bson::{Bson, Document, doc};
 use ::mongodb::options::ReturnDocument;
@@ -28,6 +30,15 @@ pub(super) const COUNTERS: &str = "siderite_counters";
 
 /// Default number of keys reserved per counter round trip.
 pub(super) const DEFAULT_BLOCK_SIZE: u32 = 64;
+
+/// Where the counters are incremented: through the driver, or on the
+/// native path when it is active (outside transactions).
+#[derive(Clone, Copy)]
+pub(super) struct Counters<'a> {
+    pub(super) db: &'a Database,
+    #[cfg(feature = "mongodb-native")]
+    pub(super) native: Option<&'a Native>,
+}
 
 /// Keys reserved but not yet handed out: `next..end` (end exclusive).
 #[derive(Debug, Default, Clone, Copy)]
@@ -106,7 +117,7 @@ impl KeyAllocator {
     /// sequence.
     pub(super) async fn reserve(
         &self,
-        db: &Database,
+        counters: Counters<'_>,
         collection: &str,
         n: usize,
     ) -> Result<i64, OrmError> {
@@ -121,7 +132,7 @@ impl KeyAllocator {
             return Ok(first);
         }
         let size = n.max(self.block_size);
-        let last = increment(db, collection, size).await?;
+        let last = increment(counters, collection, size).await?;
         // `last` is the end of the new block: keys `last - size + 1 ..= last`.
         let first = last - size + 1;
         let next = first + n;
@@ -135,8 +146,12 @@ impl KeyAllocator {
 
 /// `$inc` the counter of `collection` by `by` (creating it at `by`); returns
 /// the new `seq`.
-async fn increment(db: &Database, collection: &str, by: i64) -> Result<i64, OrmError> {
-    let counters = db.collection::<Document>(COUNTERS);
+async fn increment(at: Counters<'_>, collection: &str, by: i64) -> Result<i64, OrmError> {
+    #[cfg(feature = "mongodb-native")]
+    if let Some(done) = try_write(at.native, |n| n.increment(COUNTERS, collection, by)).await {
+        return done;
+    }
+    let counters = at.db.collection::<Document>(COUNTERS);
     let after = counters
         .find_one_and_update(doc! { "_id": collection }, doc! { "$inc": { "seq": by } })
         .upsert(true)

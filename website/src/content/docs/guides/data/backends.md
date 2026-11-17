@@ -20,7 +20,7 @@ page covers how to connect, dialect notes, and Redis.
 | PostgreSQL | `postgres` | `PgBackend` | Live suite against `postgres:17` |
 | MySQL 8 | `mysql` | `MySqlBackend` | 8.0.31+; live suite against `mysql:8.4` |
 | MongoDB | `mongodb` | `MongoBackend` | 5.0+; replica set for transactions; supported QuerySet subset |
-| MongoDB (native reads) | `mongodb-native` | `MongoBackend::connect_native` | Opt-in `OP_MSG` read path outside transactions; plain `mongodb://` without TLS or credentials |
+| MongoDB (native) | `mongodb-native` | `MongoBackend::connect_native` | Opt-in `OP_MSG` reads and retryable writes outside transactions; plain `mongodb://` without TLS or credentials |
 | Redis | `redis` | `RedisStore` | Key/hash/set client. **Not** a QuerySet backend |
 
 DynamoDB is a design note only; it is not planned for v1.
@@ -202,11 +202,11 @@ gates. This adapter is experimental and has not replaced the default driver.
 - Joins, subqueries, set operations, window functions, row locking,
   `DISTINCT ON`, and array aggregates are capability errors (HTTP 501).
 
-### Native MongoDB read path
+### Native MongoDB path
 
 Enable the `mongodb-native` feature on `siderite-backends` and connect with
-`MongoBackend::connect_native`. Reads outside transactions then use a small
-`OP_MSG` connection pool of the backend's own; the driver still runs writes,
+`MongoBackend::connect_native`. Reads and writes outside transactions then use
+a small `OP_MSG` connection pool of the backend's own; the driver still runs
 transactions, `raw_command` and index creation.
 
 ```rust
@@ -225,7 +225,13 @@ quietly uses the driver; `native_ineligibility()` says why. The pool has
 `maxPoolSize` connections (default 10, besides the driver's) and waits at
 most `waitQueueTimeoutMS` (default 30 s) for one. After a network error or a
 "not primary" reply it looks for the primary again and retries the read once
-through the driver. SRV, TLS and authentication are planned follow-ups.
+through the driver. Writes send the URL's write concern as the driver does and
+are retryable like the driver's: inserts and key-counter updates carry a
+session id and transaction number and are retried once, natively and with the
+same pair, after a network or "not primary" error, so the server applies them
+at most once (`retryWrites=false` turns this off; multi-document updates and
+deletes are never retried). Duplicate keys are `BackendError::Constraint` with
+the driver's message. SRV, TLS and authentication are planned follow-ups.
 
 ## Redis
 

@@ -26,20 +26,22 @@
 //!   `opmsg_find_as_driver` to `driver_compiled` is the driver's own;
 //!   `compile` builds the queryset and compiles it, without I/O;
 //!   `orm_native` is `orm` on a backend opened with
-//!   `MongoBackend::connect_native` (the native `OP_MSG` read path; skipped
+//!   `MongoBackend::connect_native` (the native `OP_MSG` path; skipped
 //!   with a note when the deployment does not qualify).
 //! * `mongo_list`: `orm` is `Todo::objects(&db).limit(20).all()`, the
 //!   first page `GET /todos` reads (newest first); `driver_compiled` runs
 //!   the `find` the ORM compiles and collects every document as a
 //!   `Document`; `driver_raw` runs the same `find` and only walks each
 //!   reply document's raw BSON, the floor for decoding through the driver;
-//!   `orm_native` is `orm` on the native read path.
+//!   `orm_native` is `orm` on the native path.
 //! * `mongo_insert`: `orm` is `create` (keys come from blocks of 64 reserved
 //!   with one counter update, so most inserts are one round trip);
 //!   `driver_counter_insert` reserves each key from the counter
 //!   (`findAndModify`) and then inserts, as the ORM did with one key per
 //!   counter update; `driver_insert_client_key` and `opmsg_insert` insert
-//!   with a key chosen by the client. Ids starting `w_default/` leave the
+//!   with a key chosen by the client; `orm_native` is `orm` on the native
+//!   path, whose inserts and counter updates are retryable `OP_MSG` writes
+//!   with the URL's write concern. Ids starting `w_default/` leave the
 //!   write concern to the server (majority, journaled, on a default replica
 //!   set); `w1/` ids set `w=1` on the URL, or in the raw command.
 //!
@@ -128,7 +130,7 @@ struct Target {
     label: &'static str,
     /// The ORM handle.
     db: Db,
-    /// The ORM on the native read path, when the deployment qualifies.
+    /// The ORM on the native path, when the deployment qualifies.
     native: Option<Db>,
     /// The todo collection through the driver.
     todos: Collection<Document>,
@@ -605,6 +607,9 @@ fn bench_insert(c: &mut Criterion, rt: &Runtime, targets: [&Target; 2]) {
     for target in targets {
         let id = |variant: &str| format!("{}/{variant}", target.label);
         bench_op(&mut group, rt, &id("orm"), || orm_create(&target.db));
+        if let Some(native) = &target.native {
+            bench_op(&mut group, rt, &id("orm_native"), || orm_create(native));
+        }
         bench_op(&mut group, rt, &id("driver_counter_insert"), || {
             driver_counter_insert(target)
         });

@@ -22,7 +22,7 @@ type Delivered = Result<i64, Stop>;
 /// Server error codes after which the connection's server is no longer a
 /// usable primary (or the connection is broken): the pool looks for the
 /// primary again and the read is retried once through the driver.
-const STATE_CHANGE_CODES: [i32; 11] = [
+pub(super) const STATE_CHANGE_CODES: [i32; 11] = [
     10107, // NotWritablePrimary
     13435, // NotPrimaryNoSecondaryOk
     13436, // NotPrimaryOrSecondary
@@ -99,7 +99,8 @@ where
     }
 }
 
-fn conn<'l>(lease: &'l mut Lease<'_>) -> Result<&'l mut Conn, NativeError> {
+/// The lease's connection.
+pub(super) fn conn<'l>(lease: &'l mut Lease<'_>) -> Native<&'l mut Conn> {
     lease
         .conn()
         .ok_or_else(|| NativeError::Unavailable("connection retired".into()))
@@ -149,16 +150,8 @@ fn cursor_batch<'r>(
 /// reply's `ok`. Network failures and "not primary" errors retire the
 /// connection and send the pool looking for the primary.
 pub(super) async fn exchange(lease: &mut Lease<'_>) -> Native<()> {
+    send(lease).await?;
     let conn = conn(lease)?;
-    if !conn.fits() {
-        return Err(NativeError::Unavailable(
-            "command exceeds the server's size limits".into(),
-        ));
-    }
-    if let Err(e) = conn.round_trip().await {
-        lease.retire();
-        return Err(NativeError::Network(e));
-    }
     let status = match conn.reply() {
         Ok(reply) => check_ok(reply),
         Err(e) => Err(NativeError::Network(e)),
@@ -172,8 +165,26 @@ pub(super) async fn exchange(lease: &mut Lease<'_>) -> Native<()> {
     status
 }
 
+/// Send the request written into the lease's connection and read the
+/// reply. A request over the server's size limits is not sent
+/// ([`NativeError::Unavailable`]); a network failure retires the
+/// connection.
+pub(super) async fn send(lease: &mut Lease<'_>) -> Native<()> {
+    let conn = conn(lease)?;
+    if !conn.fits() {
+        return Err(NativeError::Unavailable(
+            "command exceeds the server's size limits".into(),
+        ));
+    }
+    if let Err(e) = conn.round_trip().await {
+        lease.retire();
+        return Err(NativeError::Network(e));
+    }
+    Ok(())
+}
+
 /// `Ok` for `ok: 1`, the server's error otherwise.
-fn check_ok(reply: &RawDocument) -> Native<()> {
+pub(super) fn check_ok(reply: &RawDocument) -> Native<()> {
     let ok = match reply.get("ok") {
         Ok(Some(RawBsonRef::Double(v))) => v == 1.0,
         Ok(Some(RawBsonRef::Int32(v))) => v == 1,

@@ -89,7 +89,7 @@ pub async fn open_db(url: &str) -> Result<Db, ApiError> {
 ///
 /// `SIDERITE_MONGO_DRIVER` (the runner's `--mongo-driver`) is `driver`
 /// (default) or `native`; `native` needs the `mongodb-native` feature and
-/// fails when the deployment does not qualify for the native read path.
+/// fails when the deployment does not qualify for the native path.
 ///
 /// Args:
 ///     url: MongoDB benchmark URL, naming the pool size.
@@ -122,7 +122,7 @@ async fn open_mongo(url: &str) -> Result<Db, ApiError> {
     Ok(Db::new(backend))
 }
 
-/// The backend on the native read path, or an error naming why the
+/// The backend on the native path, or an error naming why the
 /// deployment does not qualify.
 ///
 /// Args:

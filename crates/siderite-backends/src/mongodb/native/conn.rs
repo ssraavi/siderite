@@ -2,6 +2,7 @@
 //! buffers, opened with a `hello` handshake.
 
 use super::wire::{self, DocWriter, HEADER_LEN, protocol};
+use ::mongodb::bson::Document;
 use ::mongodb::bson::raw::{Error as RawError, RawBsonRef as Raw, RawDocument};
 use std::fmt;
 use std::io::{Error, ErrorKind};
@@ -14,6 +15,8 @@ type Res<T> = Result<T, Error>;
 type Opened = (Conn, Hello);
 /// How far a command document may exceed `maxBsonObjectSize`.
 const COMMAND_SLACK: usize = 16 * 1024;
+/// `maxWriteBatchSize` when `hello` does not report it.
+const DEFAULT_WRITE_BATCH: usize = 100_000;
 
 /// The driver's minimum for MongoDB 5.0 (`maxWireVersion` 13), the oldest
 /// server the backend supports.
@@ -72,6 +75,12 @@ pub(super) struct Hello {
     pub(super) primary: Option<String>,
     /// Members it lists (`hosts`).
     pub(super) hosts: Vec<String>,
+    pub(super) max_write_batch_size: usize,
+    /// `logicalSessionTimeoutMinutes`, when the server supports sessions.
+    pub(super) session_timeout: Option<Duration>,
+    /// A standalone server (not a replica set member or `mongos`), which
+    /// does not support retryable writes.
+    pub(super) standalone: bool,
 }
 
 impl Hello {
@@ -90,9 +99,12 @@ impl Hello {
                 .unwrap_or(default)
         };
         let text = |key| doc.get_str(key).ok().map(str::to_owned);
+        let set_name = text("setName");
+        let mongos = doc.get_str("msg").is_ok_and(|msg| msg == "isdbgrid");
+        let standalone = set_name.is_none() && !mongos && !flag("isreplicaset");
         Ok(Self {
             writable_primary: flag("isWritablePrimary") || flag("ismaster"),
-            set_name: text("setName"),
+            set_name,
             max_wire_version: int("maxWireVersion")
                 .and_then(|v| i32::try_from(v).ok())
                 .unwrap_or_default(),
@@ -103,6 +115,11 @@ impl Hello {
                 .get_array("hosts")
                 .map(|hosts| hosts.into_iter().filter_map(host).collect())
                 .unwrap_or_default(),
+            max_write_batch_size: size("maxWriteBatchSize", DEFAULT_WRITE_BATCH).max(1),
+            session_timeout: int("logicalSessionTimeoutMinutes")
+                .and_then(|m| u64::try_from(m).ok())
+                .map(|m| Duration::from_secs(m.saturating_mul(60))),
+            standalone,
         })
     }
 
@@ -165,6 +182,9 @@ pub(super) struct Conn {
     pub(super) generation: u64,
     max_message_size: usize,
     max_bson_size: usize,
+    max_write_batch_size: usize,
+    /// The session timeout, when the server supports retryable writes.
+    retryable_writes: Option<Duration>,
 }
 
 impl Conn {
@@ -191,6 +211,8 @@ impl Conn {
             generation: 0,
             max_message_size: 48_000_000,
             max_bson_size: 16 * 1024 * 1024,
+            max_write_batch_size: DEFAULT_WRITE_BATCH,
+            retryable_writes: None,
         };
         let mut cmd = conn.begin();
         cmd.i32("hello", 1)?;
@@ -215,7 +237,21 @@ impl Conn {
         let hello = Hello::parse(conn.reply()?)?;
         conn.max_message_size = hello.max_message_size;
         conn.max_bson_size = hello.max_bson_size;
+        conn.max_write_batch_size = hello.max_write_batch_size;
+        conn.retryable_writes = hello.session_timeout.filter(|_| !hello.standalone);
         Ok((conn, hello))
+    }
+
+    /// The server's `maxWriteBatchSize`.
+    pub(super) fn max_write_batch_size(&self) -> usize {
+        self.max_write_batch_size
+    }
+
+    /// The server's logical session timeout, when it supports retryable
+    /// writes (a replica set member or `mongos` with sessions; the
+    /// driver's rule).
+    pub(super) fn retryable_writes(&self) -> Option<Duration> {
+        self.retryable_writes
     }
 
     /// Where the connection is in its exchange.
@@ -229,6 +265,17 @@ impl Conn {
     pub(super) fn begin(&mut self) -> DocWriter<'_> {
         wire::begin_request(&mut self.out);
         DocWriter::begin(&mut self.out)
+    }
+
+    /// Start the document sequence `id` after the command document written
+    /// since [`begin`](Self::begin).
+    pub(super) fn sequence(&mut self, id: &str) -> Res<Sequence<'_>> {
+        let start = wire::begin_sequence(&mut self.out, id)?;
+        Ok(Sequence {
+            conn: self,
+            start,
+            count: 0,
+        })
     }
 
     /// Whether the request written since [`begin`](Self::begin) fits the
@@ -292,6 +339,40 @@ impl Conn {
     }
 }
 
+/// A document sequence being written into a request.
+pub(super) struct Sequence<'c> {
+    conn: &'c mut Conn,
+    start: usize,
+    count: usize,
+}
+
+impl Sequence<'_> {
+    /// Append `doc` unless the sequence already holds `limit` documents or
+    /// the message would exceed `maxMessageSizeBytes`, or the document
+    /// `maxBsonObjectSize`; returns whether it was appended.
+    pub(super) fn push(&mut self, doc: &Document, limit: usize) -> Res<bool> {
+        if self.count >= limit {
+            return Ok(false);
+        }
+        let out = &mut self.conn.out;
+        let before = out.len();
+        wire::write_document(out, doc)?;
+        let size = out.len() - before;
+        if size > self.conn.max_bson_size || out.len() > self.conn.max_message_size {
+            out.truncate(before);
+            return Ok(false);
+        }
+        self.count += 1;
+        Ok(true)
+    }
+
+    /// Close the sequence; returns how many documents it holds.
+    pub(super) fn finish(self) -> Res<usize> {
+        wire::finish_sequence(&mut self.conn.out, self.start)?;
+        Ok(self.count)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,8 +398,19 @@ mod tests {
             "maxMessageSizeBytes": 48_000_000_i32,
             "maxBsonObjectSize": 16_777_216_i32,
             "hosts": ["a:1", "b:2"], "primary": "a:1",
+            "maxWriteBatchSize": 1000_i32,
+            "logicalSessionTimeoutMinutes": 30_i32,
         };
         let hello = Hello::parse(&doc).unwrap();
+        assert_eq!(hello.max_write_batch_size, 1000);
+        assert_eq!(hello.session_timeout, Some(Duration::from_secs(1800)));
+        assert!(!hello.standalone);
+        let standalone = Hello::parse(&rawdoc! { "ismaster": true }).unwrap();
+        assert!(standalone.standalone);
+        assert_eq!(standalone.max_write_batch_size, DEFAULT_WRITE_BATCH);
+        assert_eq!(standalone.session_timeout, None);
+        let mongos = rawdoc! { "ismaster": true, "msg": "isdbgrid" };
+        assert!(!Hello::parse(&mongos).unwrap().standalone);
         assert_eq!(hello.unusable(Some("rs0")), None);
         assert_eq!(hello.unusable(None), None);
         assert!(hello.unusable(Some("other")).is_some());

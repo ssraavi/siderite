@@ -165,7 +165,7 @@ Backends other than SQLite use Cargo features: `postgres`, `mysql`,
 `mongodb` and `redis`. Opt-in native drivers sit beside the SQLx ones:
 `sqlite-native` (`NativeSqliteBackend`, in-process SQLite) and
 `mysql-native` (`NativeMySqlBackend`); SQLx stays the default for both.
-`mongodb-native` adds an opt-in `OP_MSG` read path to `MongoBackend`
+`mongodb-native` adds an opt-in `OP_MSG` read and write path to `MongoBackend`
 (`connect_native`); the `mongodb` driver stays the default. Live tests are ignored in ordinary test runs; explicitly
 selected live tests require their service configuration and fail if it is
 missing. Setting a URL alone does not enable ignored tests.

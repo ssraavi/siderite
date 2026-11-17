@@ -182,11 +182,12 @@
 //! With the `mongodb-native` feature (off by default),
 //! `MongoBackend::connect_native` (or `connect_native_with` and
 //! `NativeOptions`) also opens a pool of the backend's own `OP_MSG`
-//! connections and sends reads outside transactions there, skipping the
-//! driver's per-operation server selection, implicit session checkout and
-//! hand-off to its pool worker. The driver `Client` stays the source of
-//! truth: it is connected as by `connect` and runs every write,
-//! transaction, admin command (`raw_command`) and index creation.
+//! connections and sends reads and writes outside transactions there,
+//! skipping the driver's per-operation server selection, implicit session
+//! checkout and hand-off to its pool worker. The driver `Client` stays the
+//! source of truth: it is connected as by `connect` and runs every
+//! transaction, admin command (`raw_command`) and index creation, and any
+//! operation the native pool cannot start.
 //!
 //! **Eligibility** is decided once, at connect: a plain `mongodb://` URL
 //! (not `mongodb+srv://`) without TLS, credentials, `loadBalanced` or a
@@ -202,13 +203,13 @@
 //! active and `MongoBackend::native_ineligibility` why native was not.
 //! SRV, TLS and authentication are planned follow-ups.
 //!
-//! **Supported operations**: `Read::Find` and `Read::Pipeline` (the
-//! `find` / `aggregate` commands of [`compile::Read`]) run by `fetch`,
-//! `fetch_each` and the reads inside `update` / `delete` with `RETURNING`,
-//! whenever no transaction (session) is involved; transactions always use
-//! the driver. Commands are written straight into a reused buffer (the
-//! compiled filter, sort, projection and stages serialized in place) with
-//! the fields the driver sends (`limit`, `skip`, `batchSize` as the driver
+//! **Reads**: `Read::Find` and `Read::Pipeline` (the `find` / `aggregate`
+//! commands of [`compile::Read`]) run by `fetch`, `fetch_each` and the
+//! reads inside `update` / `delete` with `RETURNING`, whenever no
+//! transaction (session) is involved; transactions always use the driver.
+//! Commands are written straight into a reused buffer (the compiled
+//! filter, sort, projection and stages serialized in place) with the
+//! fields the driver sends (`limit`, `skip`, `batchSize` as the driver
 //! computes it, the URL's `readConcern`, `$db`), but without `lsid` and
 //! `$clusterTime`: a read outside a session needs no session id (the
 //! server opens no session for it, and the cursor is killed or exhausted
@@ -219,16 +220,57 @@
 //! decoded by the same raw-BSON decoder as the driver path, so rows are
 //! identical.
 //!
+//! **Writes** outside transactions are the commands the driver sends for
+//! them, with `ordered: true`: `insert` with the documents in a kind-1
+//! document sequence (split, in order, at the server's `maxWriteBatchSize`
+//! and `maxMessageSizeBytes`, or at `NativeOptions::max_write_batch_size`),
+//! `update` with one `{q, u, multi: true}` statement (`u` a document or an
+//! update pipeline), `delete` with one `{q, limit: 0}` statement, and the
+//! key counter's `findAndModify` (`$inc`, `upsert`, `new`). They carry the
+//! database's write concern exactly as the driver serializes it (none when
+//! the URL sets none, so the server default applies); with an
+//! unacknowledged write concern (`w=0`) writes stay on the driver, which
+//! rejects them. Results are the driver's: `n` inserted, matched and
+//! deleted counts, and `RETURNING` rows read as on the driver path.
+//! `writeErrors` and `writeConcernError` become the driver's own error
+//! values (`InsertMany` with indexes counted across batches, or the first
+//! write error), so they classify and read as on the driver path
+//! (duplicate keys and validation are `Constraint`); only the driver's
+//! `inserted_ids` and error labels are not reproduced in the message.
+//!
+//! **Retryable writes** follow the driver's rules: `insert` (every batch)
+//! and `findAndModify` are retryable unless the URL sets
+//! `retryWrites=false` or the server has no sessions (a standalone);
+//! `update` and `delete` of many documents never are. A retryable command
+//! carries `lsid` (from a native session pool: random UUIDs, one command
+//! at a time per session, most recently used first, sessions idle for
+//! `logicalSessionTimeoutMinutes` less a minute or hit by a network error
+//! discarded, not ended explicitly) and the session's next `txnNumber`.
+//! After a network error, or an error labelled `RetryableWriteError` or
+//! with a not-primary, shutdown, interrupted, network or
+//! `ExceededTimeLimit` code (also inside a `writeConcernError`), the
+//! connections to that server are retired, the primary is found again
+//! (waiting for an election up to `serverSelectionTimeoutMS`, default
+//! 30 s) and the command is sent once more with the same `lsid` and
+//! `txnNumber`, so the server applies it at most once. If the retry
+//! reports `NoWritesPerformed`, the first error is returned. A write that
+//! may have been sent never moves to the driver (it could not reuse the
+//! session); only one the native pool cannot start (no primary known,
+//! discovery running, a document over the size limits) runs on the driver
+//! instead.
+//!
 //! **Pool**: `maxPoolSize` connections (default 10, like the driver; in
 //! addition to the driver's own pool), opened on demand with
 //! `connectTimeoutMS` and kept with `TCP_NODELAY`. A checkout takes a
 //! semaphore permit and pops an idle connection in the calling task (no
 //! channel hop); it waits at most `waitQueueTimeoutMS` (default 30 s) and
 //! then fails with `BackendError::Connection`. Each connection reuses its
-//! request and reply buffers. Cancellation is safe: a read whose future is
-//! dropped mid-write closes its connection, and one dropped while its reply
-//! is due hands the connection to a task that reads the reply to the end,
-//! kills any cursor it opened and only then returns the connection.
+//! request and reply buffers. Cancellation is safe: a request whose future
+//! is dropped mid-write closes its connection, and one dropped while its
+//! reply is due hands the connection to a task that reads the reply to the
+//! end, kills any cursor it opened and only then returns the connection; a
+//! cancelled write also discards its session, so no later command follows
+//! its `txnNumber` while it may still run on the server.
 //!
 //! **Errors and fallback**: an `ok: 0` reply is classified exactly as the
 //! driver path classifies the same server error (duplicate keys and
@@ -236,15 +278,18 @@
 //! a "not primary" / shutdown / interrupted reply (codes 10107, 13435,
 //! 13436, 189, 91, 11600, 11602 and the host / network codes 6, 7, 89,
 //! 9001), closes the connection, retires every connection to that server
-//! and makes the next checkout look for the primary again; the read is
-//! then retried once through the driver, which selects the new primary
-//! itself (only if no row was delivered yet; reads are idempotent, and no
-//! write runs natively). While no primary is known, reads use the driver.
+//! and makes the next checkout look for the primary again; a read is then
+//! retried once through the driver, which selects the new primary itself
+//! (only if no row was delivered yet; reads are idempotent), and a
+//! retryable write natively as above. While no primary is known, reads and
+//! writes use the driver.
 //!
 //! **Limitations**: no SRV, TLS, authentication, compression or server API
-//! versioning; reads only; no idle-connection reaping (`maxIdleTimeMS`), no
-//! background monitoring (a primary change is noticed through errors); the
-//! two pools together may hold up to twice `maxPoolSize` connections.
+//! versioning; no `$clusterTime` gossip (outside sessions it orders
+//! nothing on either path); no idle-connection reaping
+//! (`maxIdleTimeMS`), no background monitoring (a primary change is
+//! noticed through errors); the two pools together may hold up to twice
+//! `maxPoolSize` connections.
 
 pub mod compile;
 #[cfg(test)]

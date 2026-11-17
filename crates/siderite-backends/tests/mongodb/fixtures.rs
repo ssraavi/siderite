@@ -62,7 +62,7 @@ impl TestDb {
     }
 }
 
-/// `SIDERITE_MONGO_NATIVE=1` runs the suite with the native read path
+/// `SIDERITE_MONGO_NATIVE=1` runs the suite with the native path
 /// forced on (feature `mongodb-native`).
 pub fn native() -> bool {
     std::env::var("SIDERITE_MONGO_NATIVE").is_ok_and(|v| v == "1")

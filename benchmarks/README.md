@@ -182,7 +182,7 @@ rows through its own SQLite connection while the server is up. So the
 runner has no flag for it; measure it by starting the app yourself with the
 variable set (the app refuses it on the SQLx driver).
 
-## Native MongoDB read path
+## Native MongoDB path
 
 Build the benchmark with the opt-in data path, then select it explicitly:
 
@@ -194,10 +194,11 @@ python3 benchmarks/run_benchmarks.py --suite db --db mongodb \
 
 `--mongo-driver driver` (the default) sends everything through the
 `mongodb` crate. `native` opens the backend with
-`MongoBackend::connect_native`: reads outside transactions go out as
-`OP_MSG` on a pool of its own (`maxPoolSize` connections, which the runner
-sets to `--pool-size`, in addition to the driver's pool); writes, and so
-`POST /todos`, still use the driver. The app reads `SIDERITE_MONGO_DRIVER`
+`MongoBackend::connect_native`: reads and writes outside transactions
+(so `POST /todos` too: the key counter's `findAndModify` and the `insert`,
+both retryable with the URL's write concern) go out as `OP_MSG` on a pool
+of its own (`maxPoolSize` connections, which the runner sets to
+`--pool-size`, in addition to the driver's pool). The app reads `SIDERITE_MONGO_DRIVER`
 and exits when native was requested but the deployment does not qualify
 (TLS, credentials, SRV, a non-primary read preference, no reachable
 primary). Labels end in `-siderite-native`. The recorded database settings
