@@ -1,0 +1,206 @@
+"""T8 e2e (from T7) (copied from T5): driver URL tuning / allocator variants: siderite_todo (release) on MongoDB, ab -k, GET /todos/1 c=50 and
+POST /todos c=20 at TOKIO_WORKER_THREADS=1 and 4, interleaved over ROUNDS rounds.
+
+Usage: python3 e2e.py [rounds] [seconds]   (build first: cargo +1.99 build --release -p siderite_todo)
+Writes raw ab output + JSON results under t3/e2e/.
+Also records CPU seconds of mongod, the server and ab during each timed run (from /proc and rusage).
+"""
+import json, os, re, resource, statistics, subprocess, sys, time, urllib.request
+from pathlib import Path
+
+import pymongo
+
+S = Path(__file__).resolve().parent
+OUT = S / (os.environ.get("OUT") or "e2e")
+OUT.mkdir(exist_ok=True)
+REPO = Path("/home/user/siderite")
+# VARIANTS="name=binary|urlsuffix;..."  binary: path or 'head' (target/release/siderite_todo copied to t5/bins/head)
+_HEAD = str(S / "bins/head")
+VSPEC = {}
+for _v in (os.environ.get("VARIANTS") or "base=head|").split(";"):
+    _n, _rest = _v.split("=", 1)
+    _parts = _rest.split("|")
+    _b, _suf = _parts[0], _parts[1]
+    _env = dict(kv.split("=", 1) for kv in _parts[2].split(",")) if len(_parts) > 2 and _parts[2] else {}
+    VSPEC[_n] = (_HEAD if _b == "head" else str(S / "bins" / _b), _suf, _env)
+VARIANTS = list(VSPEC)
+CONFIGS_ENV = os.environ.get("CONFIGS")
+MONGO = "mongodb://127.0.0.1:27017/siderite?replicaSet=rs0"
+APP_URL = MONGO  # variants add maxPoolSize (the runner adds =10)
+ADDR = "127.0.0.1:18081"
+BASE = f"http://{ADDR}"
+ROUNDS = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else 5
+SECONDS = int(sys.argv[2]) if len(sys.argv) > 2 else 12
+WARM_REQUESTS = 5000
+TICK = os.sysconf("SC_CLK_TCK")
+BODY = OUT / "body.json"
+BODY.write_text('{"title":"x"}')
+
+CONFIGS = [("GET", 1), ("LIST", 1), ("POST", 1), ("GET", 4), ("LIST", 4), ("POST", 4)]
+if os.environ.get("CONFIGS"):
+    CONFIGS = [(c.split(":")[0], int(c.split(":")[1])) for c in os.environ["CONFIGS"].split(",")]
+
+
+def seed():
+    """Same data as benchmarks/database_fixtures.py: todos 1..100 + counter at 100."""
+    c = pymongo.MongoClient(MONGO)
+    db = c.get_default_database("siderite")
+    db["todos"].drop()
+    db["siderite_counters"].delete_many({})
+    db["todos"].insert_many([{"_id": i, "title": f"Todo task #{i}", "done": i % 2 == 0} for i in range(1, 101)])
+    db["siderite_counters"].insert_one({"_id": "todos", "seq": 100})
+    c.close()
+
+
+def pid_of(name):
+    out = subprocess.run(["pgrep", "-x", name], capture_output=True, text=True).stdout.split()
+    return int(out[0])
+
+
+def cpu_secs(pid):
+    f = open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()
+    return (int(f[11]) + int(f[12])) / TICK  # utime, stime
+
+
+def machine_idle():
+    f = open("/proc/stat").readline().split()[1:]
+    v = list(map(int, f))
+    return v[3] + v[4], sum(v)
+
+
+def start_server(workers, variant):
+    env = dict(os.environ, DATABASE_URL=APP_URL + VSPEC[variant][1], TOKIO_WORKER_THREADS=str(workers), DATABASE_POOL_SIZE="10", **VSPEC[variant][2])
+    log = open(OUT / "server.log", "a")
+    p = subprocess.Popen([VSPEC[variant][0], "--addr", ADDR], env=env, stdout=log, stderr=log)
+    for _ in range(200):
+        try:
+            if urllib.request.urlopen(BASE + "/health", timeout=1).status == 200:
+                return p
+        except Exception:
+            time.sleep(0.05)
+    p.kill()
+    raise RuntimeError("server did not start")
+
+
+def check_responses(method):
+    if method == "GET":
+        r = urllib.request.urlopen(BASE + "/todos/1")
+        body = json.loads(r.read())
+        assert r.status == 200 and body["id"] == 1, (r.status, body)
+    elif method == "LIST":
+        r = urllib.request.urlopen(BASE + "/todos")
+        body = json.loads(r.read())
+        items = body if isinstance(body, list) else body.get("items", body)
+        assert r.status == 200 and len(items) == 20 and items[0]["id"] >= items[1]["id"], (r.status, body)
+    else:
+        req = urllib.request.Request(BASE + "/todos", data=b'{"title":"x"}',
+                                     headers={"Content-Type": "application/json"}, method="POST")
+        r = urllib.request.urlopen(req)
+        body = json.loads(r.read())
+        assert r.status == 201 and body["id"] > 100 and body["title"] == "x", (r.status, body)
+
+
+def ab_cmd(method, conc, csv, timed):
+    cmd = ["ab", "-l", "-k", "-c", str(conc)]
+    cmd += (["-t", str(SECONDS), "-n", "100000000"] if timed else ["-n", str(WARM_REQUESTS)])
+    if csv:
+        cmd += ["-e", str(csv)]
+    if method == "POST":
+        cmd += ["-p", str(BODY), "-T", "application/json", BASE + "/todos"]
+    elif method == "LIST":
+        cmd += [BASE + "/todos"]
+    else:
+        cmd += [BASE + "/todos/1"]
+    return cmd
+
+
+def parse(text, csv):
+    def grab(pat, cast=float, default=None):
+        m = re.search(pat, text)
+        return cast(m.group(1)) if m else default
+    pct = {}
+    for line in Path(csv).read_text().splitlines()[1:]:
+        p, ms = line.split(",")
+        pct[int(float(p))] = float(ms)
+    return {
+        "rps": grab(r"Requests per second:\s+([\d.]+)"),
+        "complete": grab(r"Complete requests:\s+(\d+)", int),
+        "failed": grab(r"Failed requests:\s+(\d+)", int),
+        "non2xx": grab(r"Non-2xx responses:\s+(\d+)", int, 0),
+        "p50": pct[50], "p90": pct[90], "p99": pct[99],
+    }
+
+
+def run(method, workers, rnd, variant):
+    conc = 20 if method == "POST" else 50
+    if method in ("POST", "LIST"):
+        seed()
+    srv = start_server(workers, variant)
+    try:
+        check_responses(method)
+        subprocess.run(ab_cmd(method, conc, None, False), capture_output=True, check=True)  # warm-up
+        mongod = pid_of("mongod")
+        csv = OUT / f"r{rnd}_{variant}_{method}_{workers}.csv"
+        m0, s0, ch0, (i0, t0) = cpu_secs(mongod), cpu_secs(srv.pid), resource.getrusage(resource.RUSAGE_CHILDREN), machine_idle()
+        w0 = time.time()
+        proc = subprocess.run(ab_cmd(method, conc, csv, True), capture_output=True, text=True)
+        wall = time.time() - w0
+        m1, s1, ch1, (i1, t1) = cpu_secs(mongod), cpu_secs(srv.pid), resource.getrusage(resource.RUSAGE_CHILDREN), machine_idle()
+        (OUT / f"r{rnd}_{variant}_{method}_{workers}.txt").write_text(proc.stdout + proc.stderr)
+        res = parse(proc.stdout, csv)
+        res.update(variant=variant, method=method, workers=workers, round=rnd, wall=wall,
+                   mongod_cpu_pct=100 * (m1 - m0) / wall, server_cpu_pct=100 * (s1 - s0) / wall,
+                   server_us_per_req=1e6 * (s1 - s0) / max(1, res["complete"]),
+                   ab_cpu_pct=100 * ((ch1.ru_utime + ch1.ru_stime) - (ch0.ru_utime + ch0.ru_stime)) / wall,
+                   machine_busy_pct=100 * (1 - (i1 - i0) / (t1 - t0)))
+        check_responses(method)
+        return res
+    finally:
+        srv.terminate()
+        srv.wait()
+
+
+def main():
+    results = []
+    seed()
+    for rnd in range(1, ROUNDS + 1):
+        k = (rnd - 1) % len(CONFIGS)
+        order = CONFIGS[k:] + CONFIGS[:k]
+        for method, workers in order:
+            vs = VARIANTS[rnd % len(VARIANTS):] + VARIANTS[:rnd % len(VARIANTS)]
+            if rnd % 2 == 0:
+                vs = vs[::-1]
+            for variant in vs:
+                r = run(method, workers, rnd, variant)
+                results.append(r)
+                print(json.dumps(r), flush=True)
+                if r["non2xx"] or r["failed"]:
+                    print("WARNING: errors in run", flush=True)
+                (OUT / "results.json").write_text(json.dumps(results, indent=1))
+    summarize(results)
+
+
+def summarize(results):
+    print("\nendpoint workers variant  median_rps (min-max)   p50ms  p99ms  mongod%  server%  srv_us/req (min-max)  busy%  complete non2xx failed")
+    for method, workers in CONFIGS:
+        meds = {}
+        for variant in VARIANTS:
+            rs = [r for r in results if r["method"] == method and r["workers"] == workers and r["variant"] == variant]
+            if not rs:
+                continue
+            md = lambda k: statistics.median(r[k] for r in rs)
+            meds[variant] = (md("rps"), md("server_us_per_req"))
+            print(f"{method:5s} {workers:3d}   {variant:5s}  {md('rps'):8.0f} ({min(r['rps'] for r in rs):.0f}-{max(r['rps'] for r in rs):.0f})"
+                  f"  {md('p50'):6.2f} {md('p99'):6.2f}  {md('mongod_cpu_pct'):6.0f}  {md('server_cpu_pct'):6.0f}"
+                  f"  {md('server_us_per_req'):6.1f} ({min(r['server_us_per_req'] for r in rs):.1f}-{max(r['server_us_per_req'] for r in rs):.1f})"
+                  f"  {md('machine_busy_pct'):4.0f}  {sum(r['complete'] for r in rs):8d}  {sum(r['non2xx'] for r in rs)} {sum(r['failed'] for r in rs)}")
+        for a, b in [p.split("/") for p in (os.environ.get("PAIRS") or "nat/drv,nat/t7n").split(",")]:
+            if a in meds and b in meds:
+                print(f"      {a}/{b} rps = {meds[a][0] / meds[b][0]:.3f}   cpu/req = {meds[a][1] / meds[b][1]:.3f}")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "summary":
+        summarize(json.loads((OUT / "results.json").read_text()))
+    else:
+        main()

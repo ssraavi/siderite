@@ -24,6 +24,10 @@ def write_metadata(root: Path, directory: Path, options: dict) -> None:
     for package in (
         "fastapi",
         "uvicorn",
+        # uvicorn[standard] extras; without them Uvicorn falls back to
+        # asyncio and h11, a slower FastAPI baseline.
+        "uvloop",
+        "httptools",
         "pydantic",
         "asyncpg",
         "aiomysql",

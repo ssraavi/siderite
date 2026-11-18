@@ -1,0 +1,16 @@
+== base driver
+command findAndModify siderite.siderite_counters clusterTime lsid 1 None
+insert insert siderite.todos clusterTime lsid 2 None
+command findAndModify siderite.siderite_counters clusterTime lsid 3 None
+insert insert siderite.todos clusterTime lsid 4 None
+command aggregate siderite.todos clusterTime lsid None None
+== head driver
+command findAndModify siderite.siderite_counters clusterTime lsid 1 None
+insert insert siderite.todos clusterTime lsid 2 None
+insert insert siderite.todos clusterTime lsid 3 None
+query find siderite.todos clusterTime lsid None None
+== head native
+command findAndModify siderite.siderite_counters - lsid 1 None
+insert insert siderite.todos - lsid 2 None
+insert insert siderite.todos - lsid 3 None
+query find siderite.todos - - None None

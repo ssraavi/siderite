@@ -1,0 +1,48 @@
+
+--- trial process started 1794988007.6914036 ---
+BENCHMARK_RUNTIME {"scheduler_workers":1,"pid":4066}
+BENCHMARK_DATABASE {"pid":4066,"settings":{"version":"8.0.15","read_preference":"primary","client_read_concern":"{}","client_write_concern":"{}","server_default_read_concern":"{\"level\":\"local\"}","server_default_write_concern":"{\"w\":\"majority\",\"wtimeout\":0}","majority_journal_default":1,"max_pool_size":10,"min_pool_size":0,"max_connecting":2,"retry_reads":1,"retry_writes":1,"data_path":"native"}}
+
+--- trial process started 1794988010.835155 ---
+BENCHMARK_RUNTIME {"scheduler_workers":1,"pid":4138}
+BENCHMARK_DATABASE {"pid":4138,"settings":{"version":"8.0.15","read_preference":"primary","client_read_concern":"{}","client_write_concern":"{}","server_default_read_concern":"{\"level\":\"local\"}","server_default_write_concern":"{\"w\":\"majority\",\"wtimeout\":0}","majority_journal_default":1,"max_pool_size":10,"min_pool_size":0,"max_connecting":2,"retry_reads":1,"retry_writes":1,"data_path":"native"}}
+
+--- trial process started 1794988548.6515555 ---
+BENCHMARK_RUNTIME {"scheduler_workers":1,"pid":4532}
+BENCHMARK_DATABASE {"pid":4532,"settings":{"version":"8.0.15","read_preference":"primary","client_read_concern":"{}","client_write_concern":"{}","server_default_read_concern":"{\"level\":\"local\"}","server_default_write_concern":"{\"w\":\"majority\",\"wtimeout\":0}","majority_journal_default":1,"max_pool_size":10,"min_pool_size":0,"max_connecting":2,"retry_reads":1,"retry_writes":1,"data_path":"native"}}
+
+--- trial process started 1794988566.5956845 ---
+BENCHMARK_RUNTIME {"scheduler_workers":1,"pid":4562}
+BENCHMARK_DATABASE {"pid":4562,"settings":{"version":"8.0.15","read_preference":"primary","client_read_concern":"{}","client_write_concern":"{}","server_default_read_concern":"{\"level\":\"local\"}","server_default_write_concern":"{\"w\":\"majority\",\"wtimeout\":0}","majority_journal_default":1,"max_pool_size":10,"min_pool_size":0,"max_connecting":2,"retry_reads":1,"retry_writes":1,"data_path":"native"}}
+
+--- trial process started 1794989100.3413568 ---
+BENCHMARK_RUNTIME {"scheduler_workers":1,"pid":4861}
+BENCHMARK_DATABASE {"pid":4861,"settings":{"version":"8.0.15","read_preference":"primary","client_read_concern":"{}","client_write_concern":"{}","server_default_read_concern":"{\"level\":\"local\"}","server_default_write_concern":"{\"w\":\"majority\",\"wtimeout\":0}","majority_journal_default":1,"max_pool_size":10,"min_pool_size":0,"max_connecting":2,"retry_reads":1,"retry_writes":1,"data_path":"native"}}
+
+--- trial process started 1794989118.1272378 ---
+BENCHMARK_RUNTIME {"scheduler_workers":1,"pid":4899}
+BENCHMARK_DATABASE {"pid":4899,"settings":{"version":"8.0.15","read_preference":"primary","client_read_concern":"{}","client_write_concern":"{}","server_default_read_concern":"{\"level\":\"local\"}","server_default_write_concern":"{\"w\":\"majority\",\"wtimeout\":0}","majority_journal_default":1,"max_pool_size":10,"min_pool_size":0,"max_connecting":2,"retry_reads":1,"retry_writes":1,"data_path":"native"}}
+
+--- trial process started 1794989414.284024 ---
+BENCHMARK_RUNTIME {"scheduler_workers":1,"pid":5085}
+BENCHMARK_DATABASE {"pid":5085,"settings":{"version":"8.0.15","read_preference":"primary","client_read_concern":"{}","client_write_concern":"{}","server_default_read_concern":"{\"level\":\"local\"}","server_default_write_concern":"{\"w\":\"majority\",\"wtimeout\":0}","majority_journal_default":1,"max_pool_size":10,"min_pool_size":0,"max_connecting":2,"retry_reads":1,"retry_writes":1,"data_path":"native"}}
+
+--- trial process started 1794989417.6798615 ---
+BENCHMARK_RUNTIME {"scheduler_workers":1,"pid":5158}
+BENCHMARK_DATABASE {"pid":5158,"settings":{"version":"8.0.15","read_preference":"primary","client_read_concern":"{}","client_write_concern":"{}","server_default_read_concern":"{\"level\":\"local\"}","server_default_write_concern":"{\"w\":\"majority\",\"wtimeout\":0}","majority_journal_default":1,"max_pool_size":10,"min_pool_size":0,"max_connecting":2,"retry_reads":1,"retry_writes":1,"data_path":"native"}}
+
+--- trial process started 1794989919.1850982 ---
+BENCHMARK_RUNTIME {"scheduler_workers":1,"pid":5495}
+BENCHMARK_DATABASE {"pid":5495,"settings":{"version":"8.0.15","read_preference":"primary","client_read_concern":"{}","client_write_concern":"{}","server_default_read_concern":"{\"level\":\"local\"}","server_default_write_concern":"{\"w\":\"majority\",\"wtimeout\":0}","majority_journal_default":1,"max_pool_size":10,"min_pool_size":0,"max_connecting":2,"retry_reads":1,"retry_writes":1,"data_path":"native"}}
+
+--- trial process started 1794989933.1264622 ---
+BENCHMARK_RUNTIME {"scheduler_workers":1,"pid":5532}
+BENCHMARK_DATABASE {"pid":5532,"settings":{"version":"8.0.15","read_preference":"primary","client_read_concern":"{}","client_write_concern":"{}","server_default_read_concern":"{\"level\":\"local\"}","server_default_write_concern":"{\"w\":\"majority\",\"wtimeout\":0}","majority_journal_default":1,"max_pool_size":10,"min_pool_size":0,"max_connecting":2,"retry_reads":1,"retry_writes":1,"data_path":"native"}}
+
+--- trial process started 1794990428.0543716 ---
+BENCHMARK_RUNTIME {"scheduler_workers":1,"pid":5887}
+BENCHMARK_DATABASE {"pid":5887,"settings":{"version":"8.0.15","read_preference":"primary","client_read_concern":"{}","client_write_concern":"{}","server_default_read_concern":"{\"level\":\"local\"}","server_default_write_concern":"{\"w\":\"majority\",\"wtimeout\":0}","majority_journal_default":1,"max_pool_size":10,"min_pool_size":0,"max_connecting":2,"retry_reads":1,"retry_writes":1,"data_path":"native"}}
+
+--- trial process started 1794990442.175606 ---
+BENCHMARK_RUNTIME {"scheduler_workers":1,"pid":5925}
+BENCHMARK_DATABASE {"pid":5925,"settings":{"version":"8.0.15","read_preference":"primary","client_read_concern":"{}","client_write_concern":"{}","server_default_read_concern":"{\"level\":\"local\"}","server_default_write_concern":"{\"w\":\"majority\",\"wtimeout\":0}","majority_journal_default":1,"max_pool_size":10,"min_pool_size":0,"max_connecting":2,"retry_reads":1,"retry_writes":1,"data_path":"native"}}

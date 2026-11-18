@@ -44,9 +44,12 @@ Database-backed minimal Todo API (`GET /todos` latest 20, `GET /todos/{id}`, `PO
 | MySQL 8.4 | list 20 | 10,473 | 5,089 | 2.06x | 3.7 ms / 15.6 ms | Pool 10 |
 | MySQL 8.4 | get one | 9,886 | 7,386 | 1.34x | 3.7 ms / 4.7 ms | |
 | MySQL 8.4 | insert | 3,371 | 3,433 | 0.98x | 6.5 ms / 5.9 ms | |
-| MongoDB 8 | list 20 | 10,729 | 3,825 | 2.80x | 5.5 ms / 10.2 ms | Replica set |
-| MongoDB 8 | get one | 13,049 | 4,116 | 3.17x | 3.5 ms / 11.5 ms | |
-| MongoDB 8 | insert | 2,970 | 2,580 | 1.15x | 6.8 ms / 7.2 ms | |
+| MongoDB 8.0 | list 20 | 11,521 | 1,178 | 9.78x | 7.8 ms / 56.4 ms | Replica set, Linux host (see below) |
+| MongoDB 8.0 | get one | 13,266 | 1,228 | 10.80x | 6.7 ms / 55.1 ms | `find`, raw BSON decode |
+| MongoDB 8.0 | insert | 6,125 | 1,125 | 5.44x | 7.4 ms / 29.9 ms | Both apps reserve keys in blocks of 64 |
+| MongoDB 8.0 (native) | list 20 | 14,923 | 1,008 | 14.80x | 6.9 ms / 64.3 ms | `--mongo-driver native` (`OP_MSG`) |
+| MongoDB 8.0 (native) | get one | 19,185 | 1,062 | 18.07x | 5.5 ms / 60.8 ms | |
+| MongoDB 8.0 (native) | insert | 6,390 | 1,075 | 5.94x | 7.8 ms / 31.1 ms | Native retryable writes |
 
 ### Analysis
 
@@ -54,4 +57,5 @@ Database-backed minimal Todo API (`GET /todos` latest 20, `GET /todos/{id}`, `PO
 - **SQLite group commit:** `--siderite-group-commit` batches concurrent autocommit writes into a single transaction and shared `fsync`, boosting write throughput to **8,589 req/s** (**5.89x** speedup) at **3.7 ms** p99.
 - **SQLite WAL mode:** WAL journal mode allows readers and writers to execute concurrently without blocking, pushing insert throughput to **14,508 req/s** (**3.29x** speedup) at **1.9 ms** p99.
 - **Native SQLite backend & direct row decoding:** The opt-in native driver (`--sqlite-driver native`, `--features sqlite-native`) executes queries via in-process SQLite bindings with dedicated reader connections and an asynchronous `WriteGate`. Direct row-to-model decoding (`QuerySet::all` row sink) decodes driver cells straight into models without allocating intermediary `Row` or `Vec<Value>` structures, reaching **20,359 req/s** (**25.89x** speedup over FastAPI) on 20-row listing with sub-2 ms p99 latency.
-- **Network databases:** Network-bound writes range from parity to a clear lead (0.98x on MySQL, where FastAPI is marginally ahead, to 1.43x on PostgreSQL). Reads favor Siderite on every engine (up to 3.17x on MongoDB, 2.06x on MySQL, 1.27x on PostgreSQL and 10.60x on SQLite).
+- **Network databases:** On the Darwin host, network-bound writes range from parity to a clear lead (0.98x on MySQL, where FastAPI is marginally ahead, to 1.43x on PostgreSQL), and reads favor Siderite on every engine (2.06x on MySQL, 1.27x on PostgreSQL and 10.60x on SQLite).
+- **MongoDB (Linux host):** The MongoDB rows come from a different machine (4 vCPU Linux, MongoDB 8.0.15 single-node replica set, one Rust scheduler worker and one Uvicorn worker with uvloop/httptools, pool 10, no keep-alive, five alternating pairs of at least 10 s; [`benchmarks/evidence/mongodb-final-push-20261117`](../benchmarks/evidence/mongodb-final-push-20261117/)). There FastAPI's single process is CPU-bound at about 1,000-1,250 req/s for every operation, so the ratios are not comparable with the other engines' rows. The FastAPI baseline reserves keys in blocks of 64 like Siderite, so both inserts cost one `insert` per request plus one counter `$inc` per 64. Against the code before the MongoDB work (interleaved runs on the same host, `ab -k`), the driver path serves 1.04x / 1.21x `GET /todos/1`, 1.26x / 1.34x `GET /todos` and 2.31x / 2.35x `POST /todos` at 1 / 4 workers; the native path 1.74x / 2.36x, 1.89x / 2.24x and 2.69x / 2.76x. With native reads at four workers `mongod` uses more CPU per request than Siderite (57 vs 43 µs for `GET /todos/1`), and inserts are bound by `mongod` (75-80 % of the CPU per request).

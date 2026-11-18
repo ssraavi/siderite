@@ -1,0 +1,81 @@
+{
+  "paired_geometric_ratio": 14.906006871529085,
+  "paired_ratios": [
+    14.97438925162238,
+    14.781553736109602,
+    14.931891009888533,
+    14.747643047732002,
+    15.09732318843652
+  ],
+  "pair_ids": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "pair_scheduler_workers": [
+    [
+      1,
+      1
+    ],
+    [
+      1,
+      1
+    ],
+    [
+      1,
+      1
+    ],
+    [
+      1,
+      1
+    ],
+    [
+      1,
+      1
+    ]
+  ],
+  "database_pair_settings_match": [
+    true,
+    true,
+    true,
+    true,
+    true
+  ],
+  "pairs": 5,
+  "confidence_level": 0.95,
+  "percentile_interval": [
+    14.797898489464313,
+    15.01490505643518
+  ],
+  "bootstrap_draws": 10000,
+  "bootstrap_seed": 0,
+  "minimum_trial_seconds": 17.116,
+  "lead_threshold": 1.1,
+  "adoption_gate_passed": true,
+  "adoption_gate_reasons": [],
+  "evidence_gate_passed": true,
+  "paired_p99_ratios": [
+    0.09821609095292161,
+    0.11249516441005802,
+    0.10728555375202896,
+    0.10337937761555646,
+    0.10756009720961557
+  ],
+  "paired_p99_rounding_upper_bounds": [
+    0.09822463120076522,
+    0.11250377178933685,
+    0.10729419476678398,
+    0.10338805723590538,
+    0.1075682046101705
+  ],
+  "p99_ratio_budget": 1.05,
+  "lead_gate_passed": true,
+  "gate_reasons": [],
+  "limitations": [
+    "Interval covers this host, workload and durability profile",
+    "Pair bootstrap does not remove systematic benchmark bias",
+    "Repeated requests within a trial are not independent pairs"
+  ]
+}

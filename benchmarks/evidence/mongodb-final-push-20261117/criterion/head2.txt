@@ -1,0 +1,38 @@
+mongo_get_pk/orm        time:   [102.93 µs 107.65 µs 112.45 µs]
+mongo_get_pk/orm_native time:   [77.200 µs 80.135 µs 83.295 µs]
+mongo_get_pk/driver_compiled
+                        time:   [94.558 µs 96.976 µs 99.546 µs]
+mongo_get_pk/driver_aggregate
+                        time:   [132.47 µs 137.34 µs 142.71 µs]
+mongo_get_pk/driver_find_one
+                        time:   [100.23 µs 103.59 µs 107.10 µs]
+mongo_get_pk/opmsg_find time:   [66.600 µs 68.100 µs 69.654 µs]
+mongo_get_pk/opmsg_find_orm_shape
+                        time:   [69.360 µs 70.646 µs 71.921 µs]
+mongo_get_pk/opmsg_find_as_driver
+                        time:   [68.618 µs 70.636 µs 72.835 µs]
+mongo_get_pk/compile    time:   [1.0743 µs 1.1074 µs 1.1421 µs]
+mongo_list/orm          time:   [192.52 µs 205.15 µs 219.34 µs]
+mongo_list/orm_native   time:   [129.53 µs 133.50 µs 137.37 µs]
+mongo_list/driver_compiled
+                        time:   [257.86 µs 279.05 µs 302.56 µs]
+mongo_list/driver_raw   time:   [159.38 µs 166.93 µs 174.61 µs]
+mongo_insert/w_default/orm
+                        time:   [960.16 µs 1.0138 ms 1.0668 ms]
+mongo_insert/w_default/orm_native
+                        time:   [841.40 µs 891.66 µs 939.96 µs]
+mongo_insert/w_default/driver_counter_insert
+                        time:   [2.2898 ms 2.3670 ms 2.4552 ms]
+mongo_insert/w_default/driver_insert_client_key
+                        time:   [923.70 µs 999.90 µs 1.0834 ms]
+mongo_insert/w_default/opmsg_insert
+                        time:   [660.98 µs 706.86 µs 747.73 µs]
+mongo_insert/w1/orm     time:   [155.37 µs 160.96 µs 167.75 µs]
+mongo_insert/w1/orm_native
+                        time:   [127.33 µs 132.35 µs 137.46 µs]
+mongo_insert/w1/driver_counter_insert
+                        time:   [510.78 µs 540.35 µs 572.26 µs]
+mongo_insert/w1/driver_insert_client_key
+                        time:   [139.41 µs 146.72 µs 152.97 µs]
+mongo_insert/w1/opmsg_insert
+                        time:   [78.886 µs 81.205 µs 84.018 µs]

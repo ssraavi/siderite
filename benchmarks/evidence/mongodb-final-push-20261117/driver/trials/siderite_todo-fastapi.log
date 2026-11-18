@@ -1,0 +1,72 @@
+
+--- trial process started 1794984699.7124474 ---
+BENCHMARK_RUNTIME {"scheduler_workers": 1, "pid": 422}
+BENCHMARK_DATABASE {"pid": 422, "settings": {"version": "8.0.15", "read_preference": "primary", "client_read_concern": "{}", "client_write_concern": "{}", "server_default_read_concern": "{\"level\":\"local\"}", "server_default_write_concern": "{\"w\":\"majority\",\"wtimeout\":0}", "majority_journal_default": 1, "max_pool_size": 10, "min_pool_size": 0, "max_connecting": 2, "retry_reads": 1, "retry_writes": 1}}
+
+--- trial process started 1794984717.5778544 ---
+BENCHMARK_RUNTIME {"scheduler_workers": 1, "pid": 589}
+BENCHMARK_DATABASE {"pid": 589, "settings": {"version": "8.0.15", "read_preference": "primary", "client_read_concern": "{}", "client_write_concern": "{}", "server_default_read_concern": "{\"level\":\"local\"}", "server_default_write_concern": "{\"w\":\"majority\",\"wtimeout\":0}", "majority_journal_default": 1, "max_pool_size": 10, "min_pool_size": 0, "max_connecting": 2, "retry_reads": 1, "retry_writes": 1}}
+
+--- trial process started 1794984865.1754832 ---
+BENCHMARK_RUNTIME {"scheduler_workers": 1, "pid": 719}
+BENCHMARK_DATABASE {"pid": 719, "settings": {"version": "8.0.15", "read_preference": "primary", "client_read_concern": "{}", "client_write_concern": "{}", "server_default_read_concern": "{\"level\":\"local\"}", "server_default_write_concern": "{\"w\":\"majority\",\"wtimeout\":0}", "majority_journal_default": 1, "max_pool_size": 10, "min_pool_size": 0, "max_connecting": 2, "retry_reads": 1, "retry_writes": 1}}
+
+--- trial process started 1794985038.9573736 ---
+BENCHMARK_RUNTIME {"scheduler_workers": 1, "pid": 872}
+BENCHMARK_DATABASE {"pid": 872, "settings": {"version": "8.0.15", "read_preference": "primary", "client_read_concern": "{}", "client_write_concern": "{}", "server_default_read_concern": "{\"level\":\"local\"}", "server_default_write_concern": "{\"w\":\"majority\",\"wtimeout\":0}", "majority_journal_default": 1, "max_pool_size": 10, "min_pool_size": 0, "max_connecting": 2, "retry_reads": 1, "retry_writes": 1}}
+
+--- trial process started 1794985185.0334928 ---
+BENCHMARK_RUNTIME {"scheduler_workers": 1, "pid": 953}
+BENCHMARK_DATABASE {"pid": 953, "settings": {"version": "8.0.15", "read_preference": "primary", "client_read_concern": "{}", "client_write_concern": "{}", "server_default_read_concern": "{\"level\":\"local\"}", "server_default_write_concern": "{\"w\":\"majority\",\"wtimeout\":0}", "majority_journal_default": 1, "max_pool_size": 10, "min_pool_size": 0, "max_connecting": 2, "retry_reads": 1, "retry_writes": 1}}
+
+--- trial process started 1794985370.5862708 ---
+BENCHMARK_RUNTIME {"scheduler_workers": 1, "pid": 1134}
+BENCHMARK_DATABASE {"pid": 1134, "settings": {"version": "8.0.15", "read_preference": "primary", "client_read_concern": "{}", "client_write_concern": "{}", "server_default_read_concern": "{\"level\":\"local\"}", "server_default_write_concern": "{\"w\":\"majority\",\"wtimeout\":0}", "majority_journal_default": 1, "max_pool_size": 10, "min_pool_size": 0, "max_connecting": 2, "retry_reads": 1, "retry_writes": 1}}
+
+--- trial process started 1794985535.5123234 ---
+BENCHMARK_RUNTIME {"scheduler_workers": 1, "pid": 1256}
+BENCHMARK_DATABASE {"pid": 1256, "settings": {"version": "8.0.15", "read_preference": "primary", "client_read_concern": "{}", "client_write_concern": "{}", "server_default_read_concern": "{\"level\":\"local\"}", "server_default_write_concern": "{\"w\":\"majority\",\"wtimeout\":0}", "majority_journal_default": 1, "max_pool_size": 10, "min_pool_size": 0, "max_connecting": 2, "retry_reads": 1, "retry_writes": 1}}
+
+--- trial process started 1794985552.6969893 ---
+BENCHMARK_RUNTIME {"scheduler_workers": 1, "pid": 1338}
+BENCHMARK_DATABASE {"pid": 1338, "settings": {"version": "8.0.15", "read_preference": "primary", "client_read_concern": "{}", "client_write_concern": "{}", "server_default_read_concern": "{\"level\":\"local\"}", "server_default_write_concern": "{\"w\":\"majority\",\"wtimeout\":0}", "majority_journal_default": 1, "max_pool_size": 10, "min_pool_size": 0, "max_connecting": 2, "retry_reads": 1, "retry_writes": 1}}
+
+--- trial process started 1794985707.8085697 ---
+BENCHMARK_RUNTIME {"scheduler_workers": 1, "pid": 1431}
+BENCHMARK_DATABASE {"pid": 1431, "settings": {"version": "8.0.15", "read_preference": "primary", "client_read_concern": "{}", "client_write_concern": "{}", "server_default_read_concern": "{\"level\":\"local\"}", "server_default_write_concern": "{\"w\":\"majority\",\"wtimeout\":0}", "majority_journal_default": 1, "max_pool_size": 10, "min_pool_size": 0, "max_connecting": 2, "retry_reads": 1, "retry_writes": 1}}
+
+--- trial process started 1794985898.8602498 ---
+BENCHMARK_RUNTIME {"scheduler_workers": 1, "pid": 1599}
+BENCHMARK_DATABASE {"pid": 1599, "settings": {"version": "8.0.15", "read_preference": "primary", "client_read_concern": "{}", "client_write_concern": "{}", "server_default_read_concern": "{\"level\":\"local\"}", "server_default_write_concern": "{\"w\":\"majority\",\"wtimeout\":0}", "majority_journal_default": 1, "max_pool_size": 10, "min_pool_size": 0, "max_connecting": 2, "retry_reads": 1, "retry_writes": 1}}
+
+--- trial process started 1794986060.5672517 ---
+BENCHMARK_RUNTIME {"scheduler_workers": 1, "pid": 1719}
+BENCHMARK_DATABASE {"pid": 1719, "settings": {"version": "8.0.15", "read_preference": "primary", "client_read_concern": "{}", "client_write_concern": "{}", "server_default_read_concern": "{\"level\":\"local\"}", "server_default_write_concern": "{\"w\":\"majority\",\"wtimeout\":0}", "majority_journal_default": 1, "max_pool_size": 10, "min_pool_size": 0, "max_connecting": 2, "retry_reads": 1, "retry_writes": 1}}
+
+--- trial process started 1794986244.6527119 ---
+BENCHMARK_RUNTIME {"scheduler_workers": 1, "pid": 1894}
+BENCHMARK_DATABASE {"pid": 1894, "settings": {"version": "8.0.15", "read_preference": "primary", "client_read_concern": "{}", "client_write_concern": "{}", "server_default_read_concern": "{\"level\":\"local\"}", "server_default_write_concern": "{\"w\":\"majority\",\"wtimeout\":0}", "majority_journal_default": 1, "max_pool_size": 10, "min_pool_size": 0, "max_connecting": 2, "retry_reads": 1, "retry_writes": 1}}
+
+--- trial process started 1794986400.88414 ---
+BENCHMARK_RUNTIME {"scheduler_workers": 1, "pid": 2025}
+BENCHMARK_DATABASE {"pid": 2025, "settings": {"version": "8.0.15", "read_preference": "primary", "client_read_concern": "{}", "client_write_concern": "{}", "server_default_read_concern": "{\"level\":\"local\"}", "server_default_write_concern": "{\"w\":\"majority\",\"wtimeout\":0}", "majority_journal_default": 1, "max_pool_size": 10, "min_pool_size": 0, "max_connecting": 2, "retry_reads": 1, "retry_writes": 1}}
+
+--- trial process started 1794986420.2107015 ---
+BENCHMARK_RUNTIME {"scheduler_workers": 1, "pid": 2136}
+BENCHMARK_DATABASE {"pid": 2136, "settings": {"version": "8.0.15", "read_preference": "primary", "client_read_concern": "{}", "client_write_concern": "{}", "server_default_read_concern": "{\"level\":\"local\"}", "server_default_write_concern": "{\"w\":\"majority\",\"wtimeout\":0}", "majority_journal_default": 1, "max_pool_size": 10, "min_pool_size": 0, "max_connecting": 2, "retry_reads": 1, "retry_writes": 1}}
+
+--- trial process started 1794986507.8117807 ---
+BENCHMARK_RUNTIME {"scheduler_workers": 1, "pid": 2259}
+BENCHMARK_DATABASE {"pid": 2259, "settings": {"version": "8.0.15", "read_preference": "primary", "client_read_concern": "{}", "client_write_concern": "{}", "server_default_read_concern": "{\"level\":\"local\"}", "server_default_write_concern": "{\"w\":\"majority\",\"wtimeout\":0}", "majority_journal_default": 1, "max_pool_size": 10, "min_pool_size": 0, "max_connecting": 2, "retry_reads": 1, "retry_writes": 1}}
+
+--- trial process started 1794986629.7106771 ---
+BENCHMARK_RUNTIME {"scheduler_workers": 1, "pid": 2544}
+BENCHMARK_DATABASE {"pid": 2544, "settings": {"version": "8.0.15", "read_preference": "primary", "client_read_concern": "{}", "client_write_concern": "{}", "server_default_read_concern": "{\"level\":\"local\"}", "server_default_write_concern": "{\"w\":\"majority\",\"wtimeout\":0}", "majority_journal_default": 1, "max_pool_size": 10, "min_pool_size": 0, "max_connecting": 2, "retry_reads": 1, "retry_writes": 1}}
+
+--- trial process started 1794986719.7869265 ---
+BENCHMARK_RUNTIME {"scheduler_workers": 1, "pid": 2676}
+BENCHMARK_DATABASE {"pid": 2676, "settings": {"version": "8.0.15", "read_preference": "primary", "client_read_concern": "{}", "client_write_concern": "{}", "server_default_read_concern": "{\"level\":\"local\"}", "server_default_write_concern": "{\"w\":\"majority\",\"wtimeout\":0}", "majority_journal_default": 1, "max_pool_size": 10, "min_pool_size": 0, "max_connecting": 2, "retry_reads": 1, "retry_writes": 1}}
+
+--- trial process started 1794986841.2026067 ---
+BENCHMARK_RUNTIME {"scheduler_workers": 1, "pid": 2956}
+BENCHMARK_DATABASE {"pid": 2956, "settings": {"version": "8.0.15", "read_preference": "primary", "client_read_concern": "{}", "client_write_concern": "{}", "server_default_read_concern": "{\"level\":\"local\"}", "server_default_write_concern": "{\"w\":\"majority\",\"wtimeout\":0}", "majority_journal_default": 1, "max_pool_size": 10, "min_pool_size": 0, "max_connecting": 2, "retry_reads": 1, "retry_writes": 1}}

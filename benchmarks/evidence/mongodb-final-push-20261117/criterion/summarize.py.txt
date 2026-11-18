@@ -1,0 +1,24 @@
+"""Summarize criterion logs: median of point estimates per bench per variant."""
+import re, statistics, sys
+from pathlib import Path
+D = Path(__file__).parent / "crit"
+UNIT = {"ns": 1e-3, "µs": 1.0, "us": 1.0, "ms": 1e3, "s": 1e6}
+pat = re.compile(r"^(mongo_\S+?)\s*(?:\n\s*)?time:\s+\[\S+ \S+ ([\d.]+) (\S+) \S+ \S+\]", re.M)
+res = {}
+for f in sorted(D.glob("*.log")):
+    v = re.sub(r"\d+$", "", f.stem)
+    for name, val, unit in pat.findall(f.read_text()):
+        res.setdefault(name, {}).setdefault(v, []).append(float(val) * UNIT[unit])
+vs = ["base", "head"]
+print(f"{'bench':48s} " + "  ".join(f"{v+' median (runs)':34s}" for v in vs) + " head/base")
+for name in sorted(res):
+    cells, meds = [], {}
+    for v in vs:
+        xs = res[name].get(v)
+        if xs:
+            meds[v] = statistics.median(xs)
+            cells.append(f"{meds[v]:8.1f} ({' '.join(f'{x:.1f}' for x in xs)})".ljust(34))
+        else:
+            cells.append("-".ljust(34))
+    r = f"{meds['head']/meds['base']:.3f}" if len(meds) == 2 else ""
+    print(f"{name:48s} " + "  ".join(cells) + " " + r)

@@ -1,0 +1,25 @@
+bench                                            base median (runs)                  head median (runs)                 head/base
+mongo_get_pk/compile                                  1.1 (1.0 1.2 1.1)                   1.1 (1.1 1.1 1.1)             0.989
+mongo_get_pk/driver_aggregate                    -                                      137.3 (127.1 137.3 138.0)       
+mongo_get_pk/driver_compiled                     -                                       98.0 (101.4 97.0 98.0)         
+mongo_get_pk/driver_find_one                         93.7 (92.9 101.0 93.7)             103.6 (96.0 103.6 104.8)        1.106
+mongo_get_pk/driver_pipeline                        132.8 (132.8 139.2 132.7)        -                                  
+mongo_get_pk/opmsg_find                              69.6 (70.5 69.6 69.4)               68.8 (71.4 68.1 68.8)          0.989
+mongo_get_pk/opmsg_find_as_driver                -                                       69.8 (69.8 70.6 68.9)          
+mongo_get_pk/opmsg_find_orm_shape                -                                       69.0 (66.7 70.6 69.0)          
+mongo_get_pk/orm                                    140.8 (138.5 145.5 140.8)           103.6 (101.1 107.7 103.6)       0.735
+mongo_get_pk/orm_native                          -                                       78.9 (78.9 80.1 73.7)          
+mongo_insert/w1/driver_counter_insert               521.1 (457.3 521.1 530.1)           540.4 (473.7 540.4 544.8)       1.037
+mongo_insert/w1/driver_insert_client_key            141.7 (135.4 143.4 141.7)           146.7 (154.9 146.7 140.8)       1.035
+mongo_insert/w1/opmsg_insert                         80.9 (80.6 80.9 86.0)               82.7 (82.7 81.2 83.3)          1.023
+mongo_insert/w1/orm                                 524.6 (485.9 524.6 542.6)           161.2 (165.3 161.0 161.2)       0.307
+mongo_insert/w1/orm_native                       -                                      126.7 (121.5 132.3 126.7)       
+mongo_insert/w_default/driver_counter_insert       2129.6 (2129.6 1976.5 2362.8)       2036.6 (2036.6 2367.0 2035.2)    0.956
+mongo_insert/w_default/driver_insert_client_key     891.1 (891.1 925.2 882.0)           908.8 (908.8 999.9 853.1)       1.020
+mongo_insert/w_default/opmsg_insert                 633.9 (635.1 611.3 633.9)           628.6 (626.0 706.9 628.6)       0.992
+mongo_insert/w_default/orm                         2226.2 (2226.2 2254.6 2098.9)        854.5 (830.7 1013.8 854.5)      0.384
+mongo_insert/w_default/orm_native                -                                      787.1 (785.6 891.7 787.1)       
+mongo_list/driver_compiled                       -                                      185.7 (185.7 279.1 168.3)       
+mongo_list/driver_raw                            -                                      160.4 (160.4 166.9 155.5)       
+mongo_list/orm                                   -                                      185.2 (185.2 205.2 170.7)       
+mongo_list/orm_native                            -                                      135.0 (135.0 133.5 140.4)       

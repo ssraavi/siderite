@@ -99,6 +99,17 @@
 - **Benchmarks:** the FastAPI MongoDB baseline reserves todo keys in
   blocks of 64 like Siderite (`benchmarks/fastapi/mongo_keys.py`) instead
   of one `$inc` per insert, so the insert comparison uses one key strategy.
+- **Benchmarks:** a MongoDB reseed no longer resets the key counter to 100;
+  it only raises it to 100 (the counter is reset when the fixture is
+  recreated). The runner reseeds between warm-up and timed run inside one
+  app process, and both apps keep the unused rest of a reserved key block
+  in memory, so a reset counter handed those keys out again: every insert
+  trial failed with duplicate-key responses (11 per trial after the
+  501-request warm-up).
+- **Benchmarks:** the run manifest also records the `uvloop` and
+  `httptools` versions (`null` when missing): without these
+  `uvicorn[standard]` extras Uvicorn falls back to asyncio and h11, a
+  slower FastAPI baseline.
 
 ## [0.1.0] - 2026-11-13
 

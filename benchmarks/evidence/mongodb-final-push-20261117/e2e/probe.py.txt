@@ -1,0 +1,16 @@
+import os, subprocess, sys, time, urllib.request, json, pymongo
+binp, mode = sys.argv[1], sys.argv[2]
+c = pymongo.MongoClient("mongodb://127.0.0.1:27017/?replicaSet=rs0"); db = c["siderite"]
+db.command("profile", 0); db["system.profile"].drop(); db.command("profile", 2)
+env = dict(os.environ, DATABASE_URL="mongodb://127.0.0.1:27017/siderite?replicaSet=rs0&maxPoolSize=10", SIDERITE_MONGO_DRIVER=mode)
+p = subprocess.Popen([binp, "--addr", "127.0.0.1:18082"], env=env)
+for _ in range(100):
+    try: urllib.request.urlopen("http://127.0.0.1:18082/health"); break
+    except Exception: time.sleep(0.1)
+for _ in range(2):
+    urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:18082/todos", data=b'{"title":"x"}', headers={"Content-Type":"application/json"}, method="POST")).read()
+urllib.request.urlopen("http://127.0.0.1:18082/todos/1").read()
+p.terminate(); p.wait(); db.command("profile", 0)
+for d in db["system.profile"].find({"ns": {"$regex": "todos|counters"}}):
+    cmd = d.get("command", {})
+    print(d["op"], next(iter(cmd), "?"), d["ns"], "clusterTime" if "$clusterTime" in cmd else "-", "lsid" if "lsid" in cmd else "-", cmd.get("txnNumber"), d.get("appName"))

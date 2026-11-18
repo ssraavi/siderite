@@ -1,0 +1,152 @@
+{
+  "req_per_sec": 6125.32,
+  "time_per_req_ms": 3.265,
+  "p50_ms": 3.006,
+  "p90_ms": 4.315,
+  "p99_ms": 8.064,
+  "failed_requests": 0,
+  "raw_output": "This is ApacheBench, Version 2.3 <$Revision: 1903618 $>\nCopyright 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/\nLicensed to The Apache Software Foundation, http://www.apache.org/\n\nBenchmarking 127.0.0.1 (be patient)\n\n\nServer Software:        \nServer Hostname:        127.0.0.1\nServer Port:            8081\n\nDocument Path:          /todos\nDocument Length:        Variable\n\nConcurrency Level:      20\nTime taken for tests:   15.951 seconds\nComplete requests:      97705\nFailed requests:        0\nTotal transferred:      16414440 bytes\nTotal body sent:        16609850\nHTML transferred:       5373775 bytes\nRequests per second:    6125.32 [#/sec] (mean)\nTime per request:       3.265 [ms] (mean)\nTime per request:       0.163 [ms] (mean, across all concurrent requests)\nTransfer rate:          1004.93 [Kbytes/sec] received\n                        1016.90 kb/s sent\n                        2021.83 kb/s total\n\nConnection Times (ms)\n              min  mean[+/-sd] median   max\nConnect:        0    0   0.1      0       6\nProcessing:     1    3   1.8      3      63\nWaiting:        1    3   1.8      3      63\nTotal:          1    3   1.8      3      63\n\nPercentage of the requests served within a certain time (ms)\n  50%      3\n  66%      3\n  75%      4\n  80%      4\n  90%      4\n  95%      5\n  98%      6\n  99%      8\n 100%     63 (longest request)\nCompleted 9770 requests\nCompleted 19540 requests\nCompleted 29310 requests\nCompleted 39080 requests\nCompleted 48850 requests\nCompleted 58620 requests\nCompleted 68390 requests\nCompleted 78160 requests\nCompleted 87930 requests\nCompleted 97700 requests\nFinished 97705 requests\n",
+  "exit_status": 0,
+  "completed_requests": 97705,
+  "non_2xx_responses": 0,
+  "elapsed_seconds": 15.951,
+  "requested_requests": 97705,
+  "concurrency": 20,
+  "timed_out": false,
+  "invalid_reasons": [],
+  "row_delta": 97705,
+  "response_checks": {
+    "phase": "after_timed_trial",
+    "measured_responses_checked": false,
+    "requested_samples": 20,
+    "concurrency": 20,
+    "verified_rows": 20,
+    "responses": [
+      {
+        "status": 201,
+        "id": 891715,
+        "invalid_reasons": []
+      },
+      {
+        "status": 201,
+        "id": 891716,
+        "invalid_reasons": []
+      },
+      {
+        "status": 201,
+        "id": 891718,
+        "invalid_reasons": []
+      },
+      {
+        "status": 201,
+        "id": 891717,
+        "invalid_reasons": []
+      },
+      {
+        "status": 201,
+        "id": 891719,
+        "invalid_reasons": []
+      },
+      {
+        "status": 201,
+        "id": 891721,
+        "invalid_reasons": []
+      },
+      {
+        "status": 201,
+        "id": 891720,
+        "invalid_reasons": []
+      },
+      {
+        "status": 201,
+        "id": 891728,
+        "invalid_reasons": []
+      },
+      {
+        "status": 201,
+        "id": 891722,
+        "invalid_reasons": []
+      },
+      {
+        "status": 201,
+        "id": 891725,
+        "invalid_reasons": []
+      },
+      {
+        "status": 201,
+        "id": 891727,
+        "invalid_reasons": []
+      },
+      {
+        "status": 201,
+        "id": 891731,
+        "invalid_reasons": []
+      },
+      {
+        "status": 201,
+        "id": 891723,
+        "invalid_reasons": []
+      },
+      {
+        "status": 201,
+        "id": 891730,
+        "invalid_reasons": []
+      },
+      {
+        "status": 201,
+        "id": 891733,
+        "invalid_reasons": []
+      },
+      {
+        "status": 201,
+        "id": 891724,
+        "invalid_reasons": []
+      },
+      {
+        "status": 201,
+        "id": 891729,
+        "invalid_reasons": []
+      },
+      {
+        "status": 201,
+        "id": 891726,
+        "invalid_reasons": []
+      },
+      {
+        "status": 201,
+        "id": 891732,
+        "invalid_reasons": []
+      },
+      {
+        "status": 201,
+        "id": 891734,
+        "invalid_reasons": []
+      }
+    ],
+    "invalid_reasons": [],
+    "valid": true
+  },
+  "keep_alive_requested": false,
+  "keep_alive_requests": null,
+  "pair_index": 4,
+  "runtime_workers": 1,
+  "latency_resolution_ms": 0.001,
+  "latency_csv": "latency-8ji519oz.csv",
+  "database_backend": "mongodb",
+  "database_settings": {
+    "version": "8.0.15",
+    "read_preference": "primary",
+    "client_read_concern": "{}",
+    "client_write_concern": "{}",
+    "server_default_read_concern": "{\"level\":\"local\"}",
+    "server_default_write_concern": "{\"w\":\"majority\",\"wtimeout\":0}",
+    "majority_journal_default": 1,
+    "max_pool_size": 10,
+    "min_pool_size": 0,
+    "max_connecting": 2,
+    "retry_reads": 1,
+    "retry_writes": 1,
+    "data_path": "driver"
+  },
+  "valid": true
+}

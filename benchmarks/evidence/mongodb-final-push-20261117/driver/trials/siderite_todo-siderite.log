@@ -1,0 +1,72 @@
+
+--- trial process started 1794984698.8785703 ---
+BENCHMARK_RUNTIME {"scheduler_workers":1,"pid":400}
+BENCHMARK_DATABASE {"pid":400,"settings":{"version":"8.0.15","read_preference":"primary","client_read_concern":"{}","client_write_concern":"{}","server_default_read_concern":"{\"level\":\"local\"}","server_default_write_concern":"{\"w\":\"majority\",\"wtimeout\":0}","majority_journal_default":1,"max_pool_size":10,"min_pool_size":0,"max_connecting":2,"retry_reads":1,"retry_writes":1,"data_path":"driver"}}
+
+--- trial process started 1794984702.440559 ---
+BENCHMARK_RUNTIME {"scheduler_workers":1,"pid":471}
+BENCHMARK_DATABASE {"pid":471,"settings":{"version":"8.0.15","read_preference":"primary","client_read_concern":"{}","client_write_concern":"{}","server_default_read_concern":"{\"level\":\"local\"}","server_default_write_concern":"{\"w\":\"majority\",\"wtimeout\":0}","majority_journal_default":1,"max_pool_size":10,"min_pool_size":0,"max_connecting":2,"retry_reads":1,"retry_writes":1,"data_path":"driver"}}
+
+--- trial process started 1794985009.802583 ---
+BENCHMARK_RUNTIME {"scheduler_workers":1,"pid":806}
+BENCHMARK_DATABASE {"pid":806,"settings":{"version":"8.0.15","read_preference":"primary","client_read_concern":"{}","client_write_concern":"{}","server_default_read_concern":"{\"level\":\"local\"}","server_default_write_concern":"{\"w\":\"majority\",\"wtimeout\":0}","majority_journal_default":1,"max_pool_size":10,"min_pool_size":0,"max_connecting":2,"retry_reads":1,"retry_writes":1,"data_path":"driver"}}
+
+--- trial process started 1794985024.7311087 ---
+BENCHMARK_RUNTIME {"scheduler_workers":1,"pid":839}
+BENCHMARK_DATABASE {"pid":839,"settings":{"version":"8.0.15","read_preference":"primary","client_read_concern":"{}","client_write_concern":"{}","server_default_read_concern":"{\"level\":\"local\"}","server_default_write_concern":"{\"w\":\"majority\",\"wtimeout\":0}","majority_journal_default":1,"max_pool_size":10,"min_pool_size":0,"max_connecting":2,"retry_reads":1,"retry_writes":1,"data_path":"driver"}}
+
+--- trial process started 1794985337.568974 ---
+BENCHMARK_RUNTIME {"scheduler_workers":1,"pid":1045}
+BENCHMARK_DATABASE {"pid":1045,"settings":{"version":"8.0.15","read_preference":"primary","client_read_concern":"{}","client_write_concern":"{}","server_default_read_concern":"{\"level\":\"local\"}","server_default_write_concern":"{\"w\":\"majority\",\"wtimeout\":0}","majority_journal_default":1,"max_pool_size":10,"min_pool_size":0,"max_connecting":2,"retry_reads":1,"retry_writes":1,"data_path":"driver"}}
+
+--- trial process started 1794985354.0295641 ---
+BENCHMARK_RUNTIME {"scheduler_workers":1,"pid":1101}
+BENCHMARK_DATABASE {"pid":1101,"settings":{"version":"8.0.15","read_preference":"primary","client_read_concern":"{}","client_write_concern":"{}","server_default_read_concern":"{\"level\":\"local\"}","server_default_write_concern":"{\"w\":\"majority\",\"wtimeout\":0}","majority_journal_default":1,"max_pool_size":10,"min_pool_size":0,"max_connecting":2,"retry_reads":1,"retry_writes":1,"data_path":"driver"}}
+
+--- trial process started 1794985534.792717 ---
+BENCHMARK_RUNTIME {"scheduler_workers":1,"pid":1233}
+BENCHMARK_DATABASE {"pid":1233,"settings":{"version":"8.0.15","read_preference":"primary","client_read_concern":"{}","client_write_concern":"{}","server_default_read_concern":"{\"level\":\"local\"}","server_default_write_concern":"{\"w\":\"majority\",\"wtimeout\":0}","majority_journal_default":1,"max_pool_size":10,"min_pool_size":0,"max_connecting":2,"retry_reads":1,"retry_writes":1,"data_path":"driver"}}
+
+--- trial process started 1794985538.014762 ---
+BENCHMARK_RUNTIME {"scheduler_workers":1,"pid":1305}
+BENCHMARK_DATABASE {"pid":1305,"settings":{"version":"8.0.15","read_preference":"primary","client_read_concern":"{}","client_write_concern":"{}","server_default_read_concern":"{\"level\":\"local\"}","server_default_write_concern":"{\"w\":\"majority\",\"wtimeout\":0}","majority_journal_default":1,"max_pool_size":10,"min_pool_size":0,"max_connecting":2,"retry_reads":1,"retry_writes":1,"data_path":"driver"}}
+
+--- trial process started 1794985869.4907043 ---
+BENCHMARK_RUNTIME {"scheduler_workers":1,"pid":1533}
+BENCHMARK_DATABASE {"pid":1533,"settings":{"version":"8.0.15","read_preference":"primary","client_read_concern":"{}","client_write_concern":"{}","server_default_read_concern":"{\"level\":\"local\"}","server_default_write_concern":"{\"w\":\"majority\",\"wtimeout\":0}","majority_journal_default":1,"max_pool_size":10,"min_pool_size":0,"max_connecting":2,"retry_reads":1,"retry_writes":1,"data_path":"driver"}}
+
+--- trial process started 1794985883.993979 ---
+BENCHMARK_RUNTIME {"scheduler_workers":1,"pid":1567}
+BENCHMARK_DATABASE {"pid":1567,"settings":{"version":"8.0.15","read_preference":"primary","client_read_concern":"{}","client_write_concern":"{}","server_default_read_concern":"{\"level\":\"local\"}","server_default_write_concern":"{\"w\":\"majority\",\"wtimeout\":0}","majority_journal_default":1,"max_pool_size":10,"min_pool_size":0,"max_connecting":2,"retry_reads":1,"retry_writes":1,"data_path":"driver"}}
+
+--- trial process started 1794986215.7144628 ---
+BENCHMARK_RUNTIME {"scheduler_workers":1,"pid":1828}
+BENCHMARK_DATABASE {"pid":1828,"settings":{"version":"8.0.15","read_preference":"primary","client_read_concern":"{}","client_write_concern":"{}","server_default_read_concern":"{\"level\":\"local\"}","server_default_write_concern":"{\"w\":\"majority\",\"wtimeout\":0}","majority_journal_default":1,"max_pool_size":10,"min_pool_size":0,"max_connecting":2,"retry_reads":1,"retry_writes":1,"data_path":"driver"}}
+
+--- trial process started 1794986230.2592716 ---
+BENCHMARK_RUNTIME {"scheduler_workers":1,"pid":1863}
+BENCHMARK_DATABASE {"pid":1863,"settings":{"version":"8.0.15","read_preference":"primary","client_read_concern":"{}","client_write_concern":"{}","server_default_read_concern":"{\"level\":\"local\"}","server_default_write_concern":"{\"w\":\"majority\",\"wtimeout\":0}","majority_journal_default":1,"max_pool_size":10,"min_pool_size":0,"max_connecting":2,"retry_reads":1,"retry_writes":1,"data_path":"driver"}}
+
+--- trial process started 1794986399.8303657 ---
+BENCHMARK_RUNTIME {"scheduler_workers":1,"pid":1999}
+BENCHMARK_DATABASE {"pid":1999,"settings":{"version":"8.0.15","read_preference":"primary","client_read_concern":"{}","client_write_concern":"{}","server_default_read_concern":"{\"level\":\"local\"}","server_default_write_concern":"{\"w\":\"majority\",\"wtimeout\":0}","majority_journal_default":1,"max_pool_size":10,"min_pool_size":0,"max_connecting":2,"retry_reads":1,"retry_writes":1,"data_path":"driver"}}
+
+--- trial process started 1794986403.328081 ---
+BENCHMARK_RUNTIME {"scheduler_workers":1,"pid":2068}
+BENCHMARK_DATABASE {"pid":2068,"settings":{"version":"8.0.15","read_preference":"primary","client_read_concern":"{}","client_write_concern":"{}","server_default_read_concern":"{\"level\":\"local\"}","server_default_write_concern":"{\"w\":\"majority\",\"wtimeout\":0}","majority_journal_default":1,"max_pool_size":10,"min_pool_size":0,"max_connecting":2,"retry_reads":1,"retry_writes":1,"data_path":"driver"}}
+
+--- trial process started 1794986596.4069252 ---
+BENCHMARK_RUNTIME {"scheduler_workers":1,"pid":2399}
+BENCHMARK_DATABASE {"pid":2399,"settings":{"version":"8.0.15","read_preference":"primary","client_read_concern":"{}","client_write_concern":"{}","server_default_read_concern":"{\"level\":\"local\"}","server_default_write_concern":"{\"w\":\"majority\",\"wtimeout\":0}","majority_journal_default":1,"max_pool_size":10,"min_pool_size":0,"max_connecting":2,"retry_reads":1,"retry_writes":1,"data_path":"driver"}}
+
+--- trial process started 1794986612.9201005 ---
+BENCHMARK_RUNTIME {"scheduler_workers":1,"pid":2471}
+BENCHMARK_DATABASE {"pid":2471,"settings":{"version":"8.0.15","read_preference":"primary","client_read_concern":"{}","client_write_concern":"{}","server_default_read_concern":"{\"level\":\"local\"}","server_default_write_concern":"{\"w\":\"majority\",\"wtimeout\":0}","majority_journal_default":1,"max_pool_size":10,"min_pool_size":0,"max_connecting":2,"retry_reads":1,"retry_writes":1,"data_path":"driver"}}
+
+--- trial process started 1794986807.8517904 ---
+BENCHMARK_RUNTIME {"scheduler_workers":1,"pid":2814}
+BENCHMARK_DATABASE {"pid":2814,"settings":{"version":"8.0.15","read_preference":"primary","client_read_concern":"{}","client_write_concern":"{}","server_default_read_concern":"{\"level\":\"local\"}","server_default_write_concern":"{\"w\":\"majority\",\"wtimeout\":0}","majority_journal_default":1,"max_pool_size":10,"min_pool_size":0,"max_connecting":2,"retry_reads":1,"retry_writes":1,"data_path":"driver"}}
+
+--- trial process started 1794986824.495571 ---
+BENCHMARK_RUNTIME {"scheduler_workers":1,"pid":2887}
+BENCHMARK_DATABASE {"pid":2887,"settings":{"version":"8.0.15","read_preference":"primary","client_read_concern":"{}","client_write_concern":"{}","server_default_read_concern":"{\"level\":\"local\"}","server_default_write_concern":"{\"w\":\"majority\",\"wtimeout\":0}","majority_journal_default":1,"max_pool_size":10,"min_pool_size":0,"max_connecting":2,"retry_reads":1,"retry_writes":1,"data_path":"driver"}}

@@ -1,0 +1,12 @@
+GET w1 base  rps    15947 err 0  server usr   43.0 sys   18.9  mongod usr   73.1 sys   18.8 us/req
+GET w1 drv   rps    15640 err 0  server usr   42.1 sys   20.3  mongod usr   53.1 sys   15.9 us/req
+GET w1 nat   rps    28726 err 0  server usr   15.5 sys   18.3  mongod usr   34.6 sys   15.0 us/req
+GET w4 base  rps    14776 err 0  server usr   79.7 sys   31.1  mongod usr   85.7 sys   19.6 us/req
+GET w4 drv   rps    19740 err 0  server usr   63.9 sys   28.7  mongod usr   52.7 sys   16.3 us/req
+GET w4 nat   rps    34268 err 0  server usr   20.2 sys   17.8  mongod usr   37.1 sys   14.5 us/req
+LIST w4 base  rps     9865 err 0  server usr  132.7 sys   44.5  mongod usr  143.4 sys   24.9 us/req
+LIST w4 drv   rps    12830 err 0  server usr   93.3 sys   35.4  mongod usr  109.2 sys   20.5 us/req
+LIST w4 nat   rps    20653 err 0  server usr   33.9 sys   21.9  mongod usr   79.2 sys   20.2 us/req
+POST w4 base  rps     2436 err 0  server usr  200.1 sys   84.5  mongod usr  609.6 sys  202.9 us/req
+POST w4 drv   rps     5803 err 0  server usr   94.1 sys   43.7  mongod usr  205.5 sys   84.4 us/req
+POST w4 nat   rps     6772 err 0  server usr   50.6 sys   34.2  mongod usr  189.4 sys   84.8 us/req
