@@ -212,7 +212,8 @@ def seed_database(backend: str, recreate: bool = False, url=None,
                     await db["todos"].drop()
                 else:
                     await db["todos"].delete_many({})
-                await db["siderite_counters"].delete_many({})
+                if recreate:
+                    await db["siderite_counters"].delete_many({})
                 docs = [
                     {
                         "_id": i,
@@ -222,8 +223,15 @@ def seed_database(backend: str, recreate: bool = False, url=None,
                     for i in range(1, 101)
                 ]
                 await db["todos"].insert_many(docs)
-                await db["siderite_counters"].insert_one(
-                    {"_id": "todos", "seq": 100}
+                # Both apps reserve keys in blocks and keep the unused
+                # rest of a block in memory across a reseed (warm-up and
+                # timed run share one process). Resetting the counter
+                # would hand those keys out again, so a reseed only
+                # raises it to the fixture's 100, never lowers it.
+                await db["siderite_counters"].update_one(
+                    {"_id": "todos"},
+                    {"$max": {"seq": 100}},
+                    upsert=True,
                 )
             finally:
                 client.close()
